@@ -6,3 +6,7 @@
 	path = Baseband-guard
 	url = https://github.com/vc-teahouse/Baseband-guard
 	branch = main
+[submodule "NoMount"]
+	path = NoMount
+	url = https://github.com/maxsteeel/nomount
+	branch = dev

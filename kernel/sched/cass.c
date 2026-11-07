@@ -77,11 +77,30 @@ void cass_cpu_util(struct cass_cpu_cand *c, int this_cpu, bool sync)
 	c->cap_no_therm = c->cap_orig - min(c->hard_util, c->cap_orig - 1);
 }
 
-/* Returns true if @a is a better CPU than @b */
+/*
+ * Returns true if @c is a CPU with the maximum possible original capacity and
+ * there's only one such CPU in the system (i.e., if @c is the prime CPU).
+ */
+static __always_inline
+bool cass_prime_cpu(const struct cass_cpu_cand *c)
+{
+	/*
+	 * On arm64, the prime CPU is always the last CPU. If it doesn't have
+	 * the same original capacity as the prior CPU, then it is prime.
+	 */
+	return c->cpu == nr_cpu_ids - 1 &&
+	       arch_scale_cpu_capacity(nr_cpu_ids - 2) != SCHED_CAPACITY_SCALE;
+}
+
+/*
+ * Returns true if @a is a better CPU than @b. A perfect tie replaces @b with
+ * probability 1/N, where N counts the tied candidates seen so far.
+ */
 static __always_inline
 bool cass_cpu_better(const struct cass_cpu_cand *a,
 		     const struct cass_cpu_cand *b, unsigned long p_util,
-		     int this_cpu, int prev_cpu, bool sync)
+		     int this_cpu, int prev_cpu, bool sync,
+		     unsigned int *nr_cands)
 {
 #define cass_cmp(a, b) ({ res = (a) - (b); })
 #define cass_eq(a, b) ({ res = (a) == (b); })
@@ -102,6 +121,10 @@ bool cass_cpu_better(const struct cass_cpu_cand *a,
 		     fits_capacity(p_util, b->cpu)))
 		goto done;
 
+	/* Prefer the CPU that isn't the single fastest one in the system */
+	if (cass_cmp(cass_prime_cpu(b), cass_prime_cpu(a)))
+		goto done;
+
 	/* Prefer the CPU with lower relative utilization */
 	if (cass_cmp(b->util, a->util))
 		goto done;
@@ -110,9 +133,16 @@ bool cass_cpu_better(const struct cass_cpu_cand *a,
 	if (cass_cmp(!!a->exit_lat, !!b->exit_lat))
 		goto done;
 
-	/* Prefer the current CPU for sync wakes */
-	if (sync && (cass_eq(a->cpu, this_cpu) || !cass_cmp(b->cpu, this_cpu)))
-		goto done;
+	if (sync) {
+		/* Prefer the current CPU for sync wakes */
+		if (cass_eq(a->cpu, this_cpu))
+			goto done;
+		if (b->cpu == this_cpu) {
+			/* @b wins; don't let it look like a tie */
+			res = -1;
+			goto done;
+		}
+	}
 
 	/* Prefer the CPU with higher capacity */
 	if (cass_cmp(a->cap, b->cap))
@@ -123,8 +153,13 @@ bool cass_cpu_better(const struct cass_cpu_cand *a,
 		goto done;
 
 	/* Prefer the previous CPU */
-	if (cass_eq(a->cpu, prev_cpu) || !cass_cmp(b->cpu, prev_cpu))
+	if (cass_eq(a->cpu, prev_cpu))
 		goto done;
+	if (b->cpu == prev_cpu) {
+		/* @b wins; don't let it look like a tie */
+		res = -1;
+		goto done;
+	}
 
 	/* Prefer the CPU that shares a cache with the previous CPU */
 	if (cass_cmp(cpus_share_cache(a->cpu, prev_cpu),
@@ -133,8 +168,17 @@ bool cass_cpu_better(const struct cass_cpu_cand *a,
 
 	/* @a isn't a better CPU than @b. @res must be <=0 to indicate such. */
 done:
-	/* @a is a better CPU than @b if @res is positive */
-	return res > 0;
+	/* @a is strictly better: restart the tie count */
+	if (res > 0) {
+		*nr_cands = 1;
+		return true;
+	}
+
+	/* Perfect tie: reservoir sampling gives each tied CPU a fair chance */
+	if (res == 0 && !reciprocal_scale(sched_rng(), ++(*nr_cands)))
+		return true;
+
+	return false;
 }
 
 static int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync, bool rt)
@@ -142,6 +186,7 @@ static int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync, bool rt
 	/* Initialize @best such that @best always has a valid CPU at the end */
 	struct cass_cpu_cand cands[2], *best = cands;
 	int this_cpu = raw_smp_processor_id();
+	unsigned int nr_cands = 1;
 	unsigned long p_util, uc_min;
 	bool has_idle = false;
 	int cidx = 0, cpu;
@@ -185,6 +230,7 @@ static int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync, bool rt
 		 * sync wakes, treat the current CPU as idle if @current is the
 		 * only running task.
 		 */
+		curr->cpu = cpu;
 		if ((sync && cpu == this_cpu && rq->nr_running == 1) ||
 		    choose_idle_cpu(cpu, p)) {
 			/*
@@ -195,7 +241,8 @@ static int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync, bool rt
 			 * candidates.
 			 */
 			if (!has_idle &&
-			    uc_min <= arch_scale_min_freq_capacity(cpu)) {
+			    uc_min <= arch_scale_min_freq_capacity(cpu) &&
+			    !cass_prime_cpu(curr)) {
 				/* Discard any previous non-idle candidate */
 				best = curr;
 				has_idle = true;
@@ -218,7 +265,6 @@ static int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync, bool rt
 		}
 
 		/* Get this CPU's capacity and utilization */
-		curr->cpu = cpu;
 		cass_cpu_util(curr, this_cpu, sync);
 
 		/*
@@ -263,9 +309,12 @@ static int cass_best_cpu(struct task_struct *p, int prev_cpu, bool sync, bool rt
 		 * If @best == @curr then there's no need to compare them, but
 		 * cidx still needs to be changed to the other candidate slot.
 		 */
-		if (best == curr ||
-		    cass_cpu_better(curr, best, p_util, this_cpu, prev_cpu,
-				    sync)) {
+		if (best == curr) {
+			/* First candidate, or the first idle one */
+			nr_cands = 1;
+			cidx ^= 1;
+		} else if (cass_cpu_better(curr, best, p_util, this_cpu,
+					   prev_cpu, sync, &nr_cands)) {
 			best = curr;
 			cidx ^= 1;
 		}

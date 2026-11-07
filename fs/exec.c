@@ -1733,6 +1733,14 @@ static int exec_binprm(struct linux_binprm *bprm)
 /*
  * sys_execve() executes a new program.
  */
+#ifdef CONFIG_KSU_MANUAL_HOOK
+__attribute__((hot))
+extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
+				void *argv, void *envp, int *flags);
+__attribute__((hot))
+extern int ksu_handle_post_execveat(int *fd, struct filename **filename_ptr,
+				void *argv, void *envp, int *flags, int *retval);
+#endif
 #ifdef CONFIG_KSU_SUSFS
 extern struct static_key_true ksu_su_compat_enabled;
 extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
@@ -1754,12 +1762,17 @@ static int __do_execve_file(int fd, struct filename *filename,
 	struct files_struct *displaced;
 	int retval;
 
-#ifdef CONFIG_KSU_SUSFS
+#if defined(CONFIG_KSU_SUSFS) || defined(CONFIG_KSU_MANUAL_HOOK)
 	bool is_su_session = false;
-#endif // #ifdef CONFIG_KSU_SUSFS
+#endif
 
 	if (IS_ERR(filename))
 		return PTR_ERR(filename);
+#ifdef CONFIG_KSU_MANUAL_HOOK
+	/* filename is NULL when called from do_execve_file() */
+	if (likely(filename))
+		is_su_session = !ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
+#endif
 #ifdef CONFIG_KSU_SUSFS
 	/* filename is NULL when called from do_execve_file() */
 	if (unlikely(!filename) || likely(susfs_is_current_proc_no_su()))
@@ -1886,12 +1899,16 @@ orig_flow:
 	}
 
 	retval = exec_binprm(bprm);
-#ifdef CONFIG_KSU_SUSFS
+#if defined(CONFIG_KSU_SUSFS) || defined(CONFIG_KSU_MANUAL_HOOK)
 	if (unlikely(is_su_session)) {
+#ifdef CONFIG_KSU_SUSFS
 		(void)ksu_handle_post_execveat_sucompat(&fd, &filename, &argv, &envp, &flags, &retval);
+#else
+		(void)ksu_handle_post_execveat(&fd, &filename, &argv, &envp, &flags, &retval);
+#endif
 		is_su_session = false;
 	}
-#endif // #ifdef CONFIG_KSU_SUSFS
+#endif
 	if (retval < 0)
 		goto out;
 
@@ -1922,7 +1939,10 @@ out_unmark:
 #ifdef CONFIG_KSU_SUSFS
 	if (unlikely(is_su_session))
 		(void)ksu_handle_post_execveat_sucompat(&fd, &filename, &argv, &envp, &flags, &retval);
-#endif // #ifdef CONFIG_KSU_SUSFS
+#elif defined(CONFIG_KSU_MANUAL_HOOK)
+	if (unlikely(is_su_session))
+		(void)ksu_handle_post_execveat(&fd, &filename, &argv, &envp, &flags, &retval);
+#endif
 
 out_free:
 	free_bprm(bprm);

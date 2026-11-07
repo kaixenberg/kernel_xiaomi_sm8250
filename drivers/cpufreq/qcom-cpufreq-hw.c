@@ -260,6 +260,30 @@ qcom_cpufreq_hw_target_index(struct cpufreq_policy *policy,
 	return 0;
 }
 
+#ifdef CONFIG_EFFCPU
+/*
+ * The hardware can sit on a LUT row hidden from cpufreq, as it boots on one
+ * and the table keeps the LUT row numbers. Find the closest row that is listed.
+ */
+static unsigned int qcom_cpufreq_hw_valid_index(struct cpufreq_frequency_table *table,
+						unsigned int index)
+{
+	int i;
+
+	for (i = index; i >= 0; i--)
+		if (table[i].frequency != CPUFREQ_ENTRY_INVALID &&
+		    table[i].frequency != CPUFREQ_TABLE_END)
+			return i;
+
+	for (i = index + 1; i < lut_max_entries &&
+	     table[i].frequency != CPUFREQ_TABLE_END; i++)
+		if (table[i].frequency != CPUFREQ_ENTRY_INVALID)
+			return i;
+
+	return index;
+}
+#endif
+
 static unsigned int qcom_cpufreq_hw_get(unsigned int cpu)
 {
 	struct cpufreq_policy *policy;
@@ -274,6 +298,9 @@ static unsigned int qcom_cpufreq_hw_get(unsigned int cpu)
 
 	index = readl_relaxed(base + offsets[REG_PERF_STATE]);
 	index = min(index, lut_max_entries - 1);
+#ifdef CONFIG_EFFCPU
+	index = qcom_cpufreq_hw_valid_index(policy->freq_table, index);
+#endif
 
 	return policy->freq_table[index].frequency;
 }
@@ -336,6 +363,12 @@ static int qcom_cpufreq_hw_cpu_init(struct cpufreq_policy *policy)
 	fie_init_cpu_domain(policy->cpus, max_freq);
 
 	policy->driver_data = c->base;
+#ifdef CONFIG_EFFCPU
+	writel_relaxed(qcom_cpufreq_hw_valid_index(policy->freq_table,
+				min_t(u32, readl_relaxed(c->base + offsets[REG_PERF_STATE]),
+				      lut_max_entries - 1)),
+		       c->base + offsets[REG_PERF_STATE]);
+#endif
 	policy->fast_switch_possible = true;
 	policy->dvfs_possible_from_any_cpu = true;
 
@@ -501,13 +534,54 @@ static struct cpufreq_driver cpufreq_qcom_hw_driver = {
 	.exit		= qcom_cpufreq_exit,
 };
 
+#ifdef CONFIG_EFFCPU
+static u32 *qcom_cpufreq_hw_read_eff_table(struct device *dev, int domain, int *len)
+{
+	char name[32];
+	u32 *table;
+
+	snprintf(name, sizeof(name), "qcom,effcpufreq-table-%d", domain);
+	*len = of_property_count_u32_elems(dev->of_node, name);
+	if (*len <= 0)
+		return NULL;
+
+	table = kcalloc(*len, sizeof(*table), GFP_KERNEL);
+	if (table && of_property_read_u32_array(dev->of_node, name, table, *len)) {
+		kfree(table);
+		return NULL;
+	}
+
+	return table;
+}
+
+static bool qcom_cpufreq_hw_is_eff_freq(u32 *table, int len, u32 freq)
+{
+	int i;
+
+	if (!table)
+		return true;
+
+	for (i = 0; i < len; i++)
+		if (table[i] == freq)
+			return true;
+
+	return false;
+}
+#endif
+
 static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
-				    struct cpufreq_qcom *c, u32 max_cores)
+				    struct cpufreq_qcom *c, u32 max_cores,
+				    int domain)
 {
 	struct device *dev = &pdev->dev, *cpu_dev;
 	u32 data, src, lval, i, j, core_count, prev_cc, prev_freq, freq, volt;
 	u32 max_cc = 0;
 	unsigned long cpu;
+#ifdef CONFIG_EFFCPU
+	int eff_len = 0;
+	u32 *eff_table = qcom_cpufreq_hw_read_eff_table(dev, domain, &eff_len);
+	bool listed;
+#endif
 
 	c->table = devm_kcalloc(dev, lut_max_entries + 1,
 				sizeof(*c->table), GFP_KERNEL);
@@ -555,6 +629,12 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 		dev_dbg(dev, "index=%d freq=%d, core_count %d\n",
 				i, c->table[i].frequency, core_count);
 
+#ifdef CONFIG_EFFCPU
+		listed = qcom_cpufreq_hw_is_eff_freq(eff_table, eff_len, freq);
+		if (!listed)
+			c->table[i].frequency = CPUFREQ_ENTRY_INVALID;
+		else
+#endif
 		if (core_count < max_cc)
 			c->table[i].flags  = CPUFREQ_BOOST_FREQ;
 
@@ -565,16 +645,25 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 		prev_cc = core_count;
 		prev_freq = freq;
 
+#ifdef CONFIG_EFFCPU
+		if (!listed)
+			continue;
+#endif
 		if (cpu_dev)
 			dev_pm_opp_add(cpu_dev, freq * 1000, volt);
 	}
 
 	c->table[i].frequency = CPUFREQ_TABLE_END;
+#ifdef CONFIG_EFFCPU
+	kfree(eff_table);
+#endif
 
 	/* Record the highest non-boost frequency for thermal pressure gating. */
 	for (j = 0; j < lut_max_entries && c->table[j].frequency != CPUFREQ_TABLE_END; j++) {
 		if (c->table[j].flags == CPUFREQ_BOOST_FREQ)
 			break;
+		if (c->table[j].frequency == CPUFREQ_ENTRY_INVALID)
+			continue;
 		c->last_non_boost_freq = c->table[j].frequency;
 	}
 
@@ -649,7 +738,7 @@ static int qcom_cpu_resources_init(struct platform_device *pdev,
 		return -ENONET;
 	}
 
-	ret = qcom_cpufreq_hw_read_lut(pdev, c, max_cores);
+	ret = qcom_cpufreq_hw_read_lut(pdev, c, max_cores, index);
 	if (ret) {
 		dev_err(dev, "Domain-%d failed to read LUT\n", index);
 		return ret;

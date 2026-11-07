@@ -272,6 +272,15 @@ config LZ4HC_COMPRESS
 config LZ4_DECOMPRESS
 	tristate
 
+config LZ4_ARM64_NEON
+	bool "ARM64 NEON accelerated LZ4 decompression"
+	depends on ARM64 && KERNEL_MODE_NEON && LZ4_DECOMPRESS=y
+	default y
+	help
+	  Decode LZ4 blocks with a NEON assembly fast path and finish each
+	  block with the bounds-checked C decoder. zram's lz4 backend uses it
+	  for page reads.
+
 config ZSTD_COMMON
 	select XXHASH
 	tristate

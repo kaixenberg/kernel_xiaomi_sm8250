@@ -123,8 +123,15 @@ static int lz4_decompress(struct zcomp_params *params, struct zcomp_ctx *ctx,
 	int ret;
 
 	if (!zctx->dstrm) {
+#ifdef CONFIG_LZ4_ARM64_NEON
+		/* zcomp_decompress() runs preemptible, so NEON is usable. */
+		ret = LZ4_arm64_decompress_safe(req->src, req->dst,
+						req->src_len, req->dst_len,
+						false);
+#else
 		ret = LZ4_decompress_safe(req->src, req->dst, req->src_len,
 					  req->dst_len);
+#endif
 	} else {
 		/* Dstrm needs to be reset */
 		ret = LZ4_setStreamDecode(zctx->dstrm, params->dict,

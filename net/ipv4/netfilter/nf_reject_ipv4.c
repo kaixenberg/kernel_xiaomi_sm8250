@@ -103,6 +103,7 @@ EXPORT_SYMBOL_GPL(nf_reject_ip_tcphdr_put);
 void nf_send_reset(struct net *net, struct sk_buff *oldskb, int hook)
 {
 	struct sk_buff *nskb;
+	struct iphdr *niph;
 	const struct tcphdr *oth;
 	struct tcphdr _oth;
 
@@ -124,7 +125,7 @@ void nf_send_reset(struct net *net, struct sk_buff *oldskb, int hook)
 	nskb->mark = IP4_REPLY_MARK(net, oldskb->mark);
 
 	skb_reserve(nskb, LL_MAX_HEADER);
-	nf_reject_iphdr_put(nskb, oldskb, IPPROTO_TCP,
+	niph = nf_reject_iphdr_put(nskb, oldskb, IPPROTO_TCP,
 				   ip4_dst_hoplimit(skb_dst(nskb)));
 	nf_reject_ip_tcphdr_put(nskb, oldskb, oth);
 

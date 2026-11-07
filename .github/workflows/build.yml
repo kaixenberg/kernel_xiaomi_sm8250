@@ -1,0 +1,269 @@
+name: Build NidhiKernel
+
+# Run from the Actions tab. "Use workflow from" picks the branch:
+# nidhi builds the AOSP kernel, nidhi-miui the MIUI one.
+on:
+  workflow_dispatch:
+    inputs:
+      device:
+        description: "Device (only alioth is officially supported)"
+        type: choice
+        options: [alioth, apollo, pipa]
+        default: alioth
+      kernel_name:
+        description: "Kernel name in uname (4.19.325-<name>-<hash>)"
+        type: string
+        default: NidhiKernel
+      ksu:
+        description: "KernelSU (BakaSU) - CONFIG_KSU"
+        type: boolean
+        default: true
+      ksu_susfs:
+        description: "SuSFS (needs KernelSU) - CONFIG_KSU_SUSFS"
+        type: boolean
+        default: true
+      nomount:
+        description: "NoMount - CONFIG_NOMOUNT"
+        type: boolean
+        default: true
+      bbg:
+        description: "Baseband-guard - CONFIG_BBG"
+        type: boolean
+        default: true
+      rekernel:
+        description: "Re:Kernel - CONFIG_REKERNEL"
+        type: boolean
+        default: true
+      droidspaces:
+        description: "Droidspaces containers - CONFIG_DROIDSPACES"
+        type: boolean
+        default: true
+      effcpu:
+        description: "EFFCPU frequency tables - CONFIG_EFFCPU"
+        type: boolean
+        default: true
+      effgpu:
+        description: "EFFGPU 587 MHz cap - CONFIG_EFFGPU"
+        type: boolean
+        default: true
+      kcompressd:
+        description: "kcompressd - CONFIG_KCOMPRESSD"
+        type: boolean
+        default: true
+      lz4_neon:
+        description: "NEON LZ4 for zram - CONFIG_LZ4_ARM64_NEON"
+        type: boolean
+        default: true
+      bbr:
+        description: "BBRv3 by default - CONFIG_TCP_CONG_BBR"
+        type: boolean
+        default: true
+      cpu_tune:
+        description: "SM8250 code generation - CONFIG_ARM64_TUNE_SM8250"
+        type: boolean
+        default: true
+      panel_90hz:
+        description: "90 Hz mode, alioth only - CONFIG_K11A_PANEL_90HZ"
+        type: boolean
+        default: true
+      dc_dimming:
+        description: "DC dimming - CONFIG_DRM_SDE_EXPO"
+        type: boolean
+        default: true
+      backlight_min:
+        description: "Backlight minimum option - CONFIG_DRM_MSM_BACKLIGHT_MIN"
+        type: boolean
+        default: true
+      boeffla:
+        description: "Boeffla wakelock blocker - CONFIG_BOEFFLA_WL_BLOCKER"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  CLANG_URL: https://github.com/liliumproject/clang/releases/download/20250912/lilium_clang-20250912.tar.gz
+  CLANG_KEY: lilium-clang-20250912
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      DEVICE: ${{ inputs.device }}
+      KERNEL_NAME: ${{ inputs.kernel_name }}
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 2G
+      CCACHE_COMPILERCHECK: string:lilium-clang-20250912
+    steps:
+      - name: Check out the kernel
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Fetch KernelSU history
+        # BakaSU's version code is its commit count
+        run: git -C KernelSU fetch --unshallow --tags || git -C KernelSU fetch --tags
+
+      - name: Validate inputs
+        run: |
+          if ! [[ "$KERNEL_NAME" =~ ^[A-Za-z0-9._+-]{1,32}$ ]]; then
+            echo "::error::kernel_name may only use letters, digits and . _ + - (max 32)"
+            exit 1
+          fi
+          if [ "$DEVICE" != alioth ]; then
+            echo "::warning::$DEVICE is not officially supported: the build may fail or not boot"
+          fi
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bc bison flex libssl-dev libelf-dev \
+            cpio zip ccache python3 lz4
+
+      - name: Restore Clang
+        id: clang
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/clang
+          key: ${{ env.CLANG_KEY }}
+
+      - name: Download Clang
+        if: steps.clang.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/clang"
+          curl -fsSL "$CLANG_URL" | tar -xz -C "$RUNNER_TEMP/clang"
+
+      - name: Set up the toolchain
+        run: |
+          echo "$RUNNER_TEMP/clang/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/clang/bin/clang" --version | head -1
+          # Same make variables for the config and build passes, so Kconfig
+          # sees Clang and keeps ThinLTO and CFI
+          mkdir -p "$RUNNER_TEMP/bin"
+          cat > "$RUNNER_TEMP/bin/kmake" <<'SH'
+          #!/bin/sh
+          exec make O=out ARCH=arm64 \
+            CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+            CC="ccache clang" HOSTCC=gcc HOSTCXX=g++ LD=ld.lld AS=llvm-as AR=llvm-ar \
+            NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+            LLVM=1 LLVM_IAS=1 KBUILD_BUILD_USER=github KBUILD_BUILD_HOST=actions "$@"
+          SH
+          chmod +x "$RUNNER_TEMP/bin/kmake"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-${{ inputs.device }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ inputs.device }}-${{ github.ref_name }}-
+            ccache-${{ inputs.device }}-
+
+      - name: Write the config fragment
+        env:
+          IN_KSU: ${{ inputs.ksu }}
+          IN_KSU_SUSFS: ${{ inputs.ksu_susfs }}
+          IN_NOMOUNT: ${{ inputs.nomount }}
+          IN_BBG: ${{ inputs.bbg }}
+          IN_REKERNEL: ${{ inputs.rekernel }}
+          IN_DROIDSPACES: ${{ inputs.droidspaces }}
+          IN_EFFCPU: ${{ inputs.effcpu }}
+          IN_EFFGPU: ${{ inputs.effgpu }}
+          IN_KCOMPRESSD: ${{ inputs.kcompressd }}
+          IN_LZ4_ARM64_NEON: ${{ inputs.lz4_neon }}
+          IN_TCP_CONG_BBR: ${{ inputs.bbr }}
+          IN_ARM64_TUNE_SM8250: ${{ inputs.cpu_tune }}
+          IN_K11A_PANEL_90HZ: ${{ inputs.panel_90hz }}
+          IN_DRM_SDE_EXPO: ${{ inputs.dc_dimming }}
+          IN_DRM_MSM_BACKLIGHT_MIN: ${{ inputs.backlight_min }}
+          IN_BOEFFLA_WL_BLOCKER: ${{ inputs.boeffla }}
+        run: |
+          # Switches go in with the defconfig merge: disabling them afterwards
+          # would leave everything they select turned on.
+          F=arch/arm64/configs/ci-variant.config
+          tr -d '\r' < arch/arm64/configs/vendor/xiaomi/magictime-common.config > "$F"
+          sed -i "s|^CONFIG_LOCALVERSION=.*|CONFIG_LOCALVERSION=\"-$KERNEL_NAME\"|" "$F"
+          : > disabled.txt
+          for opt in KSU KSU_SUSFS NOMOUNT BBG REKERNEL DROIDSPACES EFFCPU EFFGPU \
+                     KCOMPRESSD LZ4_ARM64_NEON TCP_CONG_BBR ARM64_TUNE_SM8250 \
+                     K11A_PANEL_90HZ DRM_SDE_EXPO DRM_MSM_BACKLIGHT_MIN BOEFFLA_WL_BLOCKER; do
+            var="IN_$opt"
+            [ "${!var}" = true ] && continue
+            echo "$opt" >> disabled.txt
+            echo "# CONFIG_$opt is not set" >> "$F"
+            case $opt in
+              # KernelSU needs some hook: without SuSFS use the manual hooks
+              KSU_SUSFS) echo "CONFIG_KSU_MANUAL_HOOK=y" >> "$F" ;;
+              # The defconfig pass would otherwise keep baseband_guard in the LSM list
+              BBG) echo 'CONFIG_LSM="lockdown,yama,loadpin,safesetid,integrity,selinux,smack,tomoyo,apparmor,bpf"' >> "$F" ;;
+              TCP_CONG_BBR) printf '# CONFIG_DEFAULT_BBR is not set\nCONFIG_DEFAULT_CUBIC=y\n' >> "$F" ;;
+            esac
+          done
+          echo "Disabled: $(tr '\n' ' ' < disabled.txt)"
+
+      - name: Configure
+        run: |
+          kmake "${DEVICE}_defconfig" ci-variant.config
+          grep -E '^CONFIG_(CC_IS_CLANG|LTO_CLANG|THINLTO|CFI_CLANG)=' out/.config
+          bad=0
+          while read -r opt; do
+            if grep -q "^CONFIG_$opt=y" out/.config; then
+              echo "::error::CONFIG_$opt is still enabled"; bad=1
+            fi
+          done < disabled.txt
+          exit $bad
+
+      - name: Build
+        run: |
+          ccache -z
+          kmake -j"$(nproc)"
+          ccache -s | head -5
+
+      - name: Package
+        id: package
+        run: |
+          case "$GITHUB_REF_NAME" in *miui*) variant=miui ;; *) variant=aosp ;; esac
+          release=$(cat out/include/config/kernel.release)
+          zip_name="NidhiKernel-$variant-$DEVICE-$(date -u +%Y%m%d-%H%M)"
+          stage=$RUNNER_TEMP/ak3
+          cp -r AnyKernel3 "$stage"
+          rm -rf "$stage/.git" "$stage/README.md"
+          cp out/arch/arm64/boot/Image out/arch/arm64/boot/dtbo.img "$stage/"
+          case $DEVICE in
+            alioth) names="alioth aliothin" ;;
+            apollo) names="apollo apollon" ;;
+            pipa)
+              names="pipa"
+              # pipa takes its dtb from the kernel; AnyKernel3 repacks vendor_boot
+              find out/arch/arm64/boot/dts/vendor/qcom -name '*.dtb' -exec cat {} + > "$stage/dtb"
+              ;;
+          esac
+          sed -i '/^device\.name[0-9]=/d' "$stage/anykernel.sh"
+          n=1
+          for name in $names; do
+            sed -i "/^do\.cleanuponabort=/a device.name$n=$name" "$stage/anykernel.sh"
+            n=$((n + 1))
+          done
+          sed -i "s|^kernel.string=.*|kernel.string=NidhiKernel $release ($variant, $DEVICE)|" "$stage/anykernel.sh"
+          sh -n "$stage/anykernel.sh"
+          grep -E '^(kernel\.string|device\.name)' "$stage/anykernel.sh"
+          echo "zip_name=$zip_name" >> "$GITHUB_OUTPUT"
+          echo "stage=$stage" >> "$GITHUB_OUTPUT"
+          {
+            echo "### $zip_name"
+            echo "- uname: \`$release\`"
+            echo "- Branch: \`$GITHUB_REF_NAME\` ($variant)"
+            echo "- Disabled: $(tr '\n' ' ' < disabled.txt | sed 's/ *$//;s/^$/none/')"
+            [ "$DEVICE" = alioth ] || echo "- **$DEVICE is not officially supported: this build may not boot.**"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.zip_name }}
+          path: ${{ steps.package.outputs.stage }}/
+          if-no-files-found: error

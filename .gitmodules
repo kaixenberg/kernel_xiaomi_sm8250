@@ -10,3 +10,7 @@
 	path = NoMount
 	url = https://github.com/maxsteeel/nomount
 	branch = dev
+[submodule "AnyKernel3"]
+	path = AnyKernel3
+	url = https://github.com/kaixenberg/NidhiKernel-AnyKernel3
+	branch = master

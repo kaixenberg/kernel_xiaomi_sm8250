@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: GPL-2.0
+
+config DROIDSPACES
+	bool "Droidspaces container support"
+	depends on CGROUPS && NET && NETFILTER && IPV6
+	select SYSVIPC
+	select POSIX_MQUEUE
+	select NAMESPACES
+	select PID_NS
+	select IPC_NS
+	select USER_NS
+	select CGROUP_DEVICE
+	select CGROUP_NET_PRIO
+	select CGROUP_PIDS
+	select DEVTMPFS
+	select BRIDGE_NETFILTER
+	select NF_TABLES
+	select NETFILTER_XT_MATCH_ADDRTYPE
+	select IP6_NF_NAT
+	select IP6_NF_TARGET_MASQUERADE
+	select MACVLAN
+	help
+	  Enable the kernel features the Droidspaces container runtime
+	  needs, and prefixed cgroup file names on noprefix mounts.
+
+	  FAIR_GROUP_SCHED is deliberately not selected, as it would change
+	  scheduling for the whole device. Without it, the --cpus limit is
+	  unavailable.

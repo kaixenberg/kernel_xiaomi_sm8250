@@ -201,6 +201,12 @@ void dsi_rect_intersect(const struct dsi_rect *r1,
 	}
 }
 
+#ifdef CONFIG_DRM_MSM_BACKLIGHT_MIN
+/* Raise nonzero backlight levels below this; 0 disables the clamp */
+static unsigned int backlight_min;
+module_param(backlight_min, uint, 0644);
+#endif
+
 int dsi_display_set_backlight(struct drm_connector *connector,
 		void *display, u32 bl_lvl)
 {
@@ -229,6 +235,12 @@ int dsi_display_set_backlight(struct drm_connector *connector,
 
 	bl_scale_sv = panel->bl_config.bl_scale_sv;
 	bl_temp = (u32)bl_temp * bl_scale_sv / MAX_SV_BL_SCALE_LEVEL;
+
+#ifdef CONFIG_DRM_MSM_BACKLIGHT_MIN
+	if (bl_temp && bl_temp < READ_ONCE(backlight_min))
+		bl_temp = min_t(u32, READ_ONCE(backlight_min),
+				panel->bl_config.bl_max_level);
+#endif
 
 	DSI_DEBUG("bl_scale = %u, bl_scale_sv = %u, bl_lvl = %u\n",
 		bl_scale, bl_scale_sv, (u32)bl_temp);

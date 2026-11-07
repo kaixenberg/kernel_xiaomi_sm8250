@@ -59,6 +59,15 @@ config DRM_MSM_DSI
 	  Choose this option if you have a need for MIPI DSI connector
 	  support.
 
+config DRM_MSM_BACKLIGHT_MIN
+	bool "Minimum backlight level option for DSI panels"
+	# The display techpack sets CONFIG_DRM_MSM in its own header
+	depends on DRM
+	help
+	  Adds msm_drm.backlight_min. Nonzero backlight levels below it are
+	  raised to it, in the panel's raw backlight units. 0 (the default)
+	  changes nothing.
+
 config DRM_MSM_DSI_PLL
 	bool "Enable DSI PLL driver in MSM DRM"
 	depends on DRM_MSM_DSI && COMMON_CLK

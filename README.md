@@ -7,7 +7,12 @@ based on Linux 4.19.325 (CIP). It is a fork of TIMISONG-dev's
 | Branch | For |
 |---|---|
 | `nidhi` | AOSP-based ROMs (built on `magictime-new`) |
-| `nidhi-miui` | MIUI / HyperOS (built on `magictime-miui`) |
+| `nidhi-miui` | MIUI / HyperOS (`magictime-miui` with `nidhi` merged in) |
+
+> **Only alioth is officially supported and tested.** The build workflow
+> can also produce apollo (Mi 10T / Redmi K30S) and pipa (Xiaomi Pad 6)
+> kernels from the same source, but those builds may fail to compile or
+> may not boot. Keep your stock boot images before trying one.
 
 ## Features
 
@@ -52,7 +57,21 @@ all-on combination is tested.
 
 Inherited from MagicTime: KCAL, HBM, USB fast charge, WireGuard and more.
 
-## Building
+## Building with GitHub Actions
+
+Open **Actions → Build NidhiKernel → Run workflow**:
+
+- **Use workflow from:** `nidhi` for AOSP ROMs, `nidhi-miui` for MIUI.
+- **Device:** alioth (supported), apollo or pipa (unsupported).
+- **Kernel name:** what `uname -r` shows after the version, NidhiKernel by
+  default. Letters, digits and `. _ + -` only.
+- **Feature switches:** one checkbox per feature in the tables above, all
+  on by default. Turning off KernelSU also turns off SuSFS.
+
+The flashable zip is attached to the run as an artifact. The run summary
+lists the kernel release and which features were turned off.
+
+## Building locally
 
 ```bash
 git clone --recurse-submodules -b nidhi https://github.com/kaixenberg/kernel_xiaomi_sm8250

@@ -17,6 +17,22 @@
 #include "kgsl_pwrscale.h"
 #include "kgsl_trace.h"
 
+#ifdef CONFIG_EFFGPU
+#define EFFGPU_MAX_FREQ 587000000
+
+/* The power levels run from fastest to slowest */
+static unsigned int kgsl_pwrctrl_eff_pwrlevel(struct kgsl_pwrctrl *pwr)
+{
+	unsigned int level = 0;
+
+	while (level < pwr->num_pwrlevels - 2 &&
+	       pwr->pwrlevels[level].gpu_freq > EFFGPU_MAX_FREQ)
+		level++;
+
+	return level;
+}
+#endif
+
 #define KGSL_PWRFLAGS_POWER_ON 0
 #define KGSL_PWRFLAGS_CLK_ON   1
 #define KGSL_PWRFLAGS_AXI_ON   2
@@ -834,6 +850,10 @@ static ssize_t max_pwrlevel_store(struct device *dev,
 	if (level > pwr->min_pwrlevel)
 		level = pwr->min_pwrlevel;
 
+#ifdef CONFIG_EFFGPU
+	/* The power HAL writes level 0 here, keep the cap */
+	level = max(level, kgsl_pwrctrl_eff_pwrlevel(pwr));
+#endif
 	pwr->max_pwrlevel = level;
 
 	/* Update the current level using the new limit */
@@ -996,7 +1016,12 @@ static unsigned int kgsl_pwrctrl_max_clock_get(struct kgsl_device *device)
 	if (device == NULL)
 		return 0;
 	pwr = &device->pwrctrl;
+#ifdef CONFIG_EFFGPU
+	freq = pwr->pwrlevels[max(pwr->thermal_pwrlevel,
+				  kgsl_pwrctrl_eff_pwrlevel(pwr))].gpu_freq;
+#else
 	freq = pwr->pwrlevels[pwr->thermal_pwrlevel].gpu_freq;
+#endif
 	/* Calculate the effective frequency if we're cycling */
 	if (pwr->thermal_cycle) {
 		unsigned int hfreq = freq;
@@ -1152,7 +1177,11 @@ static ssize_t gpu_available_frequencies_show(struct device *dev,
 	struct kgsl_pwrctrl *pwr = &device->pwrctrl;
 	int index, num_chars = 0;
 
+#ifdef CONFIG_EFFGPU
+	for (index = kgsl_pwrctrl_eff_pwrlevel(pwr); index < pwr->num_pwrlevels - 1; index++) {
+#else
 	for (index = 0; index < pwr->num_pwrlevels - 1; index++) {
+#endif
 		num_chars += scnprintf(buf + num_chars,
 			PAGE_SIZE - num_chars - 1,
 			"%d ", pwr->pwrlevels[index].gpu_freq);
@@ -1505,7 +1534,11 @@ static ssize_t freq_table_mhz_show(struct device *dev,
 	struct kgsl_pwrctrl *pwr = &device->pwrctrl;
 	int index, num_chars = 0;
 
+#ifdef CONFIG_EFFGPU
+	for (index = kgsl_pwrctrl_eff_pwrlevel(pwr); index < pwr->num_pwrlevels - 1; index++) {
+#else
 	for (index = 0; index < pwr->num_pwrlevels - 1; index++) {
+#endif
 		num_chars += scnprintf(buf + num_chars,
 			PAGE_SIZE - num_chars - 1,
 			"%d ", pwr->pwrlevels[index].gpu_freq / 1000000);
@@ -2293,6 +2326,9 @@ int kgsl_pwrctrl_init(struct kgsl_device *device)
 
 	pwr->max_pwrlevel = 0;
 	pwr->min_pwrlevel = pwr->num_pwrlevels - 2;
+#ifdef CONFIG_EFFGPU
+	pwr->max_pwrlevel = kgsl_pwrctrl_eff_pwrlevel(pwr);
+#endif
 	pwr->thermal_pwrlevel = 0;
 	pwr->thermal_pwrlevel_floor = pwr->min_pwrlevel;
 

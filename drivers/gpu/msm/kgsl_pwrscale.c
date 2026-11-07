@@ -1039,6 +1039,12 @@ int kgsl_pwrscale_init(struct device *dev, const char *governor)
 	}
 
 	pwrscale->devfreqptr = devfreq;
+#ifdef CONFIG_EFFGPU
+	/* Report the cap; the table must keep every level for the governor */
+	mutex_lock(&devfreq->lock);
+	devfreq->max_freq = pwr->pwrlevels[pwr->max_pwrlevel].gpu_freq;
+	mutex_unlock(&devfreq->lock);
+#endif
 	pwrscale->cooling_dev = of_devfreq_cooling_register(
 					device->pdev->dev.of_node, devfreq);
 	if (IS_ERR(pwrscale->cooling_dev))

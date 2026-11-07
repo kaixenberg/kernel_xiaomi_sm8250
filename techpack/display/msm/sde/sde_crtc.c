@@ -1533,6 +1533,11 @@ static void _sde_crtc_blend_setup_mixer(struct drm_crtc *crtc,
 		if (cstate->fod_dim_layer)
 			_sde_crtc_setup_dim_layer_cfg(crtc, sde_crtc,
 					mixer, cstate->fod_dim_layer);
+#ifdef CONFIG_DRM_SDE_EXPO
+		if (cstate->exposure_dim_layer)
+			_sde_crtc_setup_dim_layer_cfg(crtc, sde_crtc,
+					mixer, cstate->exposure_dim_layer);
+#endif
 	}
 
 	_sde_crtc_program_lm_output_roi(crtc);
@@ -4620,6 +4625,63 @@ error:
 	return dim_layer;
 }
 
+#ifdef CONFIG_DRM_SDE_EXPO
+/*
+ * DC dimming: a full-screen black layer above all planes, with the alpha
+ * that expo_map_dim_level() staged from the backlight level.
+ */
+static void sde_crtc_exposure_atomic_check(struct sde_crtc_state *cstate,
+		struct plane_state *pstates, int cnt)
+{
+	struct drm_crtc_state *crtc_state = &cstate->base;
+	struct drm_display_mode *mode = &crtc_state->adjusted_mode;
+	struct dsi_display *display = get_main_display();
+	struct sde_hw_dim_layer *dim_layer;
+	struct sde_kms *kms;
+	uint32_t alpha, stage = 0;
+	int i;
+
+	cstate->exposure_dim_layer = NULL;
+
+	if (!display || !display->panel || !display->panel->dimlayer_exposure)
+		return;
+
+	/*
+	 * The FOD dim layer uses the same dim_layer slot, and the FOD icon
+	 * must not be dimmed while the sensor reads through it.
+	 */
+	if (cstate->fod_dim_layer)
+		return;
+
+	alpha = sde_crtc_get_property(cstate, CRTC_PROP_DIM_LAYER_EXPO);
+	if (!alpha)
+		return;
+
+	kms = _sde_crtc_get_kms(crtc_state->crtc);
+	if (!kms || !kms->catalog)
+		return;
+
+	if (cstate->num_dim_layers >= SDE_MAX_DIM_LAYERS)
+		return;
+
+	for (i = 0; i < cnt; i++)
+		stage = max_t(uint32_t, stage, pstates[i].stage);
+	stage += SDE_STAGE_0 + 1;
+	if (stage >= kms->catalog->mixer[0].sblk->maxblendstages)
+		return;
+
+	dim_layer = &cstate->dim_layer[cstate->num_dim_layers];
+	dim_layer->flags = SDE_DRM_DIM_LAYER_INCLUSIVE;
+	dim_layer->stage = stage;
+	dim_layer->rect.x = 0;
+	dim_layer->rect.y = 0;
+	dim_layer->rect.w = mode->hdisplay;
+	dim_layer->rect.h = mode->vdisplay;
+	dim_layer->color_fill = (struct sde_mdss_color) {0, 0, 0, alpha};
+	cstate->exposure_dim_layer = dim_layer;
+}
+#endif
+
 static void sde_crtc_fod_atomic_check(struct sde_crtc_state *cstate,
 		struct plane_state *pstates, int cnt)
 {
@@ -4989,6 +5051,9 @@ static int _sde_crtc_atomic_check_pstates(struct drm_crtc *crtc,
 		return rc;
 
 	sde_crtc_fod_atomic_check(cstate, pstates, cnt);
+#ifdef CONFIG_DRM_SDE_EXPO
+	sde_crtc_exposure_atomic_check(cstate, pstates, cnt);
+#endif
 
 	/* assign mixer stages based on sorted zpos property */
 	rc = _sde_crtc_check_zpos(state, sde_crtc, pstates, cstate, mode, cnt);
@@ -5422,6 +5487,12 @@ static void sde_crtc_install_properties(struct drm_crtc *crtc,
 
 	msm_property_install_volatile_range(&sde_crtc->property_info,
 		"output_fence", 0x0, 0, ~0, 0, CRTC_PROP_OUTPUT_FENCE);
+
+#ifdef CONFIG_DRM_SDE_EXPO
+	msm_property_install_volatile_range(&sde_crtc->property_info,
+			"dim_layer_exposure", 0x0, 0, ~0, 0,
+			CRTC_PROP_DIM_LAYER_EXPO);
+#endif
 
 	msm_property_install_range(&sde_crtc->property_info,
 			"output_fence_offset", 0x0, 0, 1, 0,

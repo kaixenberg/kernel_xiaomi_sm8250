@@ -36,6 +36,9 @@
 #include "lz4defs.h"
 #ifndef PREBOOT
 #include <linux/module.h>
+#ifdef CONFIG_LZ4_ARM64_NEON
+#include "lz4armv8/lz4accel.h"
+#endif
 #endif
 /*-*******************************
  *  Decompression functions
@@ -249,8 +252,9 @@ LZ4_FORCE_INLINE Rvl_t read_variable_length(const BYTE **ip, const BYTE *ilimit,
  *  Note that it is important for performance that this function really get inlined,
  *  in order to remove useless branches during compilation optimization.
  */
-LZ4_FORCE_INLINE int LZ4_decompress_generic(
-	const char *const src, char *const dst, int srcSize,
+LZ4_FORCE_INLINE int __LZ4_decompress_generic(
+	const char *const src, char *const dst, const BYTE *ip, BYTE *op,
+	int srcSize,
 	int outputSize, /* If endOnInput==endOnInputSize, this value is `dstCapacity` */
 
 	earlyEnd_directive partialDecoding, /* full, partial */
@@ -265,11 +269,9 @@ LZ4_FORCE_INLINE int LZ4_decompress_generic(
 	}
 
 	{
-		const BYTE *ip = (const BYTE *)src;
-		const BYTE *const iend = ip + srcSize;
+		const BYTE *const iend = (const BYTE *)src + srcSize;
 
-		BYTE *op = (BYTE *)dst;
-		BYTE *const oend = op + outputSize;
+		BYTE *const oend = (BYTE *)dst + outputSize;
 		BYTE *cpy;
 
 		const BYTE *const dictEnd =
@@ -842,6 +844,18 @@ LZ4_FORCE_INLINE int LZ4_decompress_generic(
 
 /*===== Instantiate the API decoding functions. =====*/
 
+LZ4_FORCE_INLINE int LZ4_decompress_generic(
+	const char *const src, char *const dst, int srcSize, int outputSize,
+	earlyEnd_directive partialDecoding, dict_directive dict,
+	const BYTE *const lowPrefix, const BYTE *const dictStart,
+	const size_t dictSize)
+{
+	return __LZ4_decompress_generic(src, dst, (const BYTE *)src,
+					(BYTE *)dst, srcSize, outputSize,
+					partialDecoding, dict, lowPrefix,
+					dictStart, dictSize);
+}
+
 LZ4_FORCE_O2
 int LZ4_decompress_safe(const char *source, char *dest, int compressedSize,
 			int maxDecompressedSize)
@@ -1219,6 +1233,56 @@ int LZ4_decompress_fast_usingDict(const char *source, char *dest,
 	return LZ4_decompress_fast_extDict(source, dest, originalSize,
 					   dictStart, (size_t)dictSize);
 }
+
+#if defined(CONFIG_LZ4_ARM64_NEON) && !defined(PREBOOT)
+/*
+ * Decode most of the block with the NEON routine, keeping LZ4_FAST_MARGIN
+ * bytes away from both buffer ends, then let the checked C decoder finish
+ * from the sequence boundary the assembly stopped at.  The assembly is
+ * skipped when NEON can't be used in this context.
+ */
+static ssize_t LZ4_arm64_decompress(const void *source, void *dest,
+				    size_t inputSize, size_t outputSize,
+				    earlyEnd_directive partial, bool dip)
+{
+	uint8_t *dstPtr = dest;
+	const uint8_t *srcPtr = source;
+
+	if (inputSize > LZ4_MAX_INPUT_SIZE || outputSize > INT_MAX)
+		return -EINVAL;
+
+	if (outputSize > LZ4_FAST_MARGIN && inputSize > LZ4_FAST_MARGIN &&
+	    lz4_decompress_accel_enable()) {
+		if (lz4_decompress_asm(&dstPtr, dest,
+				       dest + outputSize - LZ4_FAST_MARGIN,
+				       &srcPtr,
+				       source + inputSize - LZ4_FAST_MARGIN,
+				       dip))
+			return -EIO;
+	}
+
+	return __LZ4_decompress_generic(source, dest, srcPtr, dstPtr,
+					inputSize, outputSize, partial, noDict,
+					(BYTE *)dest, NULL, 0);
+}
+
+ssize_t LZ4_arm64_decompress_safe(const void *source, void *dest,
+				  size_t inputSize, size_t outputSize, bool dip)
+{
+	return LZ4_arm64_decompress(source, dest, inputSize, outputSize,
+				    decode_full_block, dip);
+}
+EXPORT_SYMBOL(LZ4_arm64_decompress_safe);
+
+ssize_t LZ4_arm64_decompress_safe_partial(const void *source, void *dest,
+					  size_t inputSize, size_t outputSize,
+					  bool dip)
+{
+	return LZ4_arm64_decompress(source, dest, inputSize, outputSize,
+				    partial_decode, dip);
+}
+EXPORT_SYMBOL(LZ4_arm64_decompress_safe_partial);
+#endif
 
 #ifndef PREBOOT
 EXPORT_SYMBOL(LZ4_decompress_safe);

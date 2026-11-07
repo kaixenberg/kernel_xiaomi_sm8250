@@ -24,6 +24,7 @@
 #include <linux/irqdesc.h>
 
 #include "power.h"
+#include "boeffla_wl_blocker.h"
 
 #ifndef CONFIG_SUSPEND
 suspend_state_t pm_suspend_target_state;
@@ -562,8 +563,17 @@ static void wakeup_source_activate(struct wakeup_source *ws)
  * @ws: Wakeup source to report the event for.
  * @hard: If set, abort suspends in progress and wake up from suspend-to-idle.
  */
+static void wakeup_source_deactivate(struct wakeup_source *ws);
+
 static void wakeup_source_report_event(struct wakeup_source *ws, bool hard)
 {
+	/* A blocked source never holds the system awake or aborts suspend */
+	if (boeffla_wl_blocked(ws->name)) {
+		if (ws->active)
+			wakeup_source_deactivate(ws);
+		return;
+	}
+
 	ws->event_count++;
 	/* This is racy, but the counter is approximate anyway. */
 	if (events_check_enabled)

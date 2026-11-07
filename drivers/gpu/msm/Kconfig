@@ -24,6 +24,14 @@ config QCOM_ADRENO_DEFAULT_GOVERNOR
 	default "simple_ondemand"
 	depends on QCOM_KGSL
 
+config EFFGPU
+	bool "Cap the GPU at the Snapdragon 865 frequency"
+	depends on QCOM_KGSL
+	help
+	  Limit the GPU to 587 MHz, the Adreno 650 maximum on Snapdragon 865,
+	  instead of 670 MHz on Snapdragon 870. The power level table stays
+	  intact, only the highest level allowed changes.
+
 config QCOM_KGSL_IOMMU
 	bool
 	default y if QCOM_KGSL && (MSM_IOMMU || ARM_SMMU)

@@ -1,3 +1,16 @@
 [submodule "KernelSU"]
 	path = KernelSU
-	url = https://github.com/backslashxx/KernelSU
+	url = https://github.com/Baka-SU/BakaSU
+	branch = main
+[submodule "Baseband-guard"]
+	path = Baseband-guard
+	url = https://github.com/vc-teahouse/Baseband-guard
+	branch = main
+[submodule "NoMount"]
+	path = NoMount
+	url = https://github.com/maxsteeel/nomount
+	branch = dev
+[submodule "AnyKernel3"]
+	path = AnyKernel3
+	url = https://github.com/kaixenberg/NidhiKernel-AnyKernel3
+	branch = master

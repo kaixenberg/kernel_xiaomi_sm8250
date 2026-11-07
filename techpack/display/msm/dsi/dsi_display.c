@@ -24,6 +24,9 @@
 #include "dsi_pwr.h"
 #include "sde_dbg.h"
 #include "dsi_parser.h"
+#ifdef CONFIG_DRM_SDE_EXPO
+#include "sde_expo_dim_layer.h"
+#endif
 
 #define to_dsi_display(x) container_of(x, struct dsi_display, host)
 #define INT_BASE_10 10
@@ -201,6 +204,12 @@ void dsi_rect_intersect(const struct dsi_rect *r1,
 	}
 }
 
+#ifdef CONFIG_DRM_MSM_BACKLIGHT_MIN
+/* Raise nonzero backlight levels below this; 0 disables the clamp */
+static unsigned int backlight_min;
+module_param(backlight_min, uint, 0644);
+#endif
+
 int dsi_display_set_backlight(struct drm_connector *connector,
 		void *display, u32 bl_lvl)
 {
@@ -230,6 +239,12 @@ int dsi_display_set_backlight(struct drm_connector *connector,
 	bl_scale_sv = panel->bl_config.bl_scale_sv;
 	bl_temp = (u32)bl_temp * bl_scale_sv / MAX_SV_BL_SCALE_LEVEL;
 
+#ifdef CONFIG_DRM_MSM_BACKLIGHT_MIN
+	if (bl_temp && bl_temp < READ_ONCE(backlight_min))
+		bl_temp = min_t(u32, READ_ONCE(backlight_min),
+				panel->bl_config.bl_max_level);
+#endif
+
 	DSI_DEBUG("bl_scale = %u, bl_scale_sv = %u, bl_lvl = %u\n",
 		bl_scale, bl_scale_sv, (u32)bl_temp);
 	rc = dsi_display_clk_ctrl(dsi_display->dsi_clk_handle,
@@ -239,6 +254,11 @@ int dsi_display_set_backlight(struct drm_connector *connector,
 		       dsi_display->name, rc);
 		goto error;
 	}
+
+#ifdef CONFIG_DRM_SDE_EXPO
+	if (panel->dimlayer_exposure)
+		bl_temp = expo_map_dim_level((u32)bl_temp, dsi_display);
+#endif
 
 	rc = dsi_panel_set_backlight(panel, (u32)bl_temp);
 	if (rc)
@@ -5601,6 +5621,57 @@ static DEVICE_ATTR(hbm, 0644,
 			sysfs_hbm_read,
 			sysfs_hbm_write);
 
+#ifdef CONFIG_DRM_SDE_EXPO
+/* DC dimming switch read by XiaomiParts */
+static ssize_t sysfs_dimlayer_exposure_read(struct device *dev,
+	struct device_attribute *attr, char *buf)
+{
+	struct dsi_display *display = dev_get_drvdata(dev);
+	bool status;
+
+	if (!display || !display->panel)
+		return -EINVAL;
+
+	mutex_lock(&display->panel->panel_lock);
+	status = display->panel->dimlayer_exposure;
+	mutex_unlock(&display->panel->panel_lock);
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n", status);
+}
+
+static ssize_t sysfs_dimlayer_exposure_write(struct device *dev,
+	struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct dsi_display *display = dev_get_drvdata(dev);
+	struct dsi_panel *panel;
+	bool status;
+	u32 bl_level;
+	int rc;
+
+	if (!display || !display->panel)
+		return -EINVAL;
+
+	rc = kstrtobool(buf, &status);
+	if (rc)
+		return rc;
+
+	panel = display->panel;
+	mutex_lock(&panel->panel_lock);
+	panel->dimlayer_exposure = status;
+	bl_level = panel->bl_config.bl_level;
+	mutex_unlock(&panel->panel_lock);
+
+	/* Reapply the current level so the panel and the layer switch now */
+	dsi_display_set_backlight(NULL, display, bl_level);
+
+	return count;
+}
+
+static DEVICE_ATTR(dimlayer_exposure, 0644,
+			sysfs_dimlayer_exposure_read,
+			sysfs_dimlayer_exposure_write);
+#endif
+
 static ssize_t sysfs_fod_ui_read(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
@@ -5625,6 +5696,9 @@ static DEVICE_ATTR(fod_ui, 0444,
 static struct attribute *display_fs_attrs[] = {
 	&dev_attr_fod_ui.attr,
 	&dev_attr_hbm.attr,
+#ifdef CONFIG_DRM_SDE_EXPO
+	&dev_attr_dimlayer_exposure.attr,
+#endif
 	&dev_attr_thermal_hbm_disabled.attr,
 	&dev_attr_msm_fb_ea_enable.attr,
 	NULL,

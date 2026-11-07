@@ -882,8 +882,13 @@ lto-clang-flags	:= -flto
 endif
 lto-clang-flags += -fvisibility=default $(call cc-option, -fsplit-lto-unit)
 
-# Limit inlining across translation units to reduce binary size
-LD_FLAGS_LTO_CLANG := -mllvm -import-instr-limit=5
+# Limit inlining across translation units; LLVM's default (100) bloats the
+# image, 5 leaves most of ThinLTO's cross-module inlining unused.
+LD_FLAGS_LTO_CLANG := -mllvm -import-instr-limit=20
+
+ifdef CONFIG_THINLTO
+LD_FLAGS_LTO_CLANG += --thinlto-cache-dir=.thinlto-cache
+endif
 
 KBUILD_LDFLAGS += $(LD_FLAGS_LTO_CLANG)
 KBUILD_LDFLAGS_MODULE += $(LD_FLAGS_LTO_CLANG)
@@ -1475,7 +1480,7 @@ endif # CONFIG_MODULES
 # make distclean Remove editor backup files, patch leftover files and the like
 
 # Directories & files removed with 'make clean'
-CLEAN_DIRS  += $(MODVERDIR) include/ksym
+CLEAN_DIRS  += $(MODVERDIR) include/ksym .thinlto-cache
 
 # Directories & files removed with 'make mrproper'
 MRPROPER_DIRS  += include/config usr/include include/generated          \

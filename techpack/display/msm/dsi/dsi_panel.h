@@ -243,6 +243,10 @@ struct dsi_panel {
 
 	struct brightness_alpha_pair *fod_dim_lut;
 	u32 fod_dim_lut_count;
+#ifdef CONFIG_DRM_SDE_EXPO
+	/* DC dimming: dim with an SDE layer instead of PWM */
+	bool dimlayer_exposure;
+#endif
 	int hbm_mode;
 };
 

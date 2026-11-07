@@ -59,6 +59,25 @@ config DRM_MSM_DSI
 	  Choose this option if you have a need for MIPI DSI connector
 	  support.
 
+config DRM_MSM_BACKLIGHT_MIN
+	bool "Minimum backlight level option for DSI panels"
+	# The display techpack sets CONFIG_DRM_MSM in its own header
+	depends on DRM
+	help
+	  Adds msm_drm.backlight_min. Nonzero backlight levels below it are
+	  raised to it, in the panel's raw backlight units. 0 (the default)
+	  changes nothing.
+
+config DRM_SDE_EXPO
+	bool "DC dimming through an SDE dim layer"
+	# The display techpack sets CONFIG_DRM_MSM in its own header
+	depends on DRM
+	help
+	  Adds the dimlayer_exposure switch to the primary DSI display. When
+	  on, the OLED backlight stays at or above the PWM flicker threshold
+	  and lower brightness comes from a black SDE layer instead.
+	  XiaomiParts uses it for its DC Dimming toggle.
+
 config DRM_MSM_DSI_PLL
 	bool "Enable DSI PLL driver in MSM DRM"
 	depends on DRM_MSM_DSI && COMMON_CLK

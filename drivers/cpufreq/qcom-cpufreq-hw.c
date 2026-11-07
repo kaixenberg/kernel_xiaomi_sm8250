@@ -14,6 +14,7 @@
 #include <linux/pm_opp.h>
 #include <linux/energy_model.h>
 #include <linux/sched.h>
+#include <linux/slab.h>
 #include <linux/cpu_cooling.h>
 
 #define CREATE_TRACE_POINTS
@@ -275,6 +276,30 @@ qcom_cpufreq_hw_target_index(struct cpufreq_policy *policy,
 	return 0;
 }
 
+#ifdef CONFIG_EFFCPU
+/*
+ * The hardware can sit on a LUT row hidden from cpufreq, as it boots on one
+ * and the table keeps the LUT row numbers. Find the closest row that is listed.
+ */
+static unsigned int qcom_cpufreq_hw_valid_index(struct cpufreq_frequency_table *table,
+						unsigned int index, unsigned int max)
+{
+	int i;
+
+	for (i = index; i >= 0; i--)
+		if (table[i].frequency != CPUFREQ_ENTRY_INVALID &&
+		    table[i].frequency != CPUFREQ_TABLE_END)
+			return i;
+
+	for (i = index + 1; i < max &&
+	     table[i].frequency != CPUFREQ_TABLE_END; i++)
+		if (table[i].frequency != CPUFREQ_ENTRY_INVALID)
+			return i;
+
+	return index;
+}
+#endif
+
 static unsigned int qcom_cpufreq_hw_get(unsigned int cpu)
 {
 	struct cpufreq_qcom *c;
@@ -289,6 +314,10 @@ static unsigned int qcom_cpufreq_hw_get(unsigned int cpu)
 
 	index = readl_relaxed(c->reg_bases[REG_PERF_STATE]);
 	index = min(index, c->lut_max_entries - 1);
+#ifdef CONFIG_EFFCPU
+	index = qcom_cpufreq_hw_valid_index(policy->freq_table, index,
+					    c->lut_max_entries);
+#endif
 
 	return policy->freq_table[index].frequency;
 }
@@ -337,6 +366,12 @@ static int qcom_cpufreq_hw_cpu_init(struct cpufreq_policy *policy)
 	policy->fast_switch_possible = true;
 	policy->freq_table = c->table;
 	policy->driver_data = c;
+#ifdef CONFIG_EFFCPU
+	writel_relaxed(qcom_cpufreq_hw_valid_index(c->table,
+			min_t(u32, readl_relaxed(c->reg_bases[REG_PERF_STATE]),
+			      c->lut_max_entries - 1), c->lut_max_entries),
+		       c->reg_bases[REG_PERF_STATE]);
+#endif
 	policy->dvfs_possible_from_any_cpu = true;
 
 	dev_pm_opp_of_register_em(policy->cpus);
@@ -413,13 +448,53 @@ static struct cpufreq_driver cpufreq_qcom_hw_driver = {
 	.ready		= qcom_cpufreq_ready,
 };
 
+#ifdef CONFIG_EFFCPU
+static u32 *qcom_cpufreq_hw_read_eff_table(struct device *dev, int domain, int *len)
+{
+	char name[32];
+	u32 *table;
+
+	snprintf(name, sizeof(name), "qcom,effcpufreq-table-%d", domain);
+	*len = of_property_count_u32_elems(dev->of_node, name);
+	if (*len <= 0)
+		return NULL;
+
+	table = kcalloc(*len, sizeof(*table), GFP_KERNEL);
+	if (table && of_property_read_u32_array(dev->of_node, name, table, *len)) {
+		kfree(table);
+		return NULL;
+	}
+
+	return table;
+}
+
+static bool qcom_cpufreq_hw_is_eff_freq(u32 *table, int len, u32 freq)
+{
+	int i;
+
+	if (!table)
+		return true;
+
+	for (i = 0; i < len; i++)
+		if (table[i] == freq)
+			return true;
+
+	return false;
+}
+#endif
+
 static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
-				    struct cpufreq_qcom *c)
+				    struct cpufreq_qcom *c, int domain)
 {
 	struct device *dev = &pdev->dev, *cpu_dev;
 	void __iomem *base_freq, *base_volt;
 	u32 data, src, lval, i, core_count, prev_cc, prev_freq, cur_freq, volt;
+	u32 raw_freq, prev_raw_freq = 0;
 	unsigned long cpu;
+#ifdef CONFIG_EFFCPU
+	int eff_len = 0;
+	u32 *eff_table = qcom_cpufreq_hw_read_eff_table(dev, domain, &eff_len);
+#endif
 
 	c->table = devm_kcalloc(dev, lut_max_entries + 1,
 				sizeof(*c->table), GFP_KERNEL);
@@ -447,6 +522,7 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 			c->table[i].frequency = c->cpu_hw_rate / 1000;
 
 		cur_freq = c->table[i].frequency;
+		raw_freq = cur_freq;
 
 		dev_dbg(dev, "index=%d freq=%d, core_count %d\n",
 			i, c->table[i].frequency, core_count);
@@ -459,8 +535,8 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 				c->skip_data.cc = core_count;
 				c->skip_data.final_index = i + 1;
 				c->skip_data.low_temp_index = i + 1;
-				c->skip_data.prev_freq =
-						c->table[i-1].frequency;
+				/* Raw LUT value: compared with DOMAIN_STATE */
+				c->skip_data.prev_freq = prev_raw_freq;
 				c->skip_data.prev_index = i - 1;
 				c->skip_data.prev_cc = prev_cc;
 			} else {
@@ -473,8 +549,7 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 		 * Two of the same frequencies with the same core counts means
 		 * end of table.
 		 */
-		if (i > 0 && c->table[i - 1].frequency ==
-				c->table[i].frequency) {
+		if (i > 0 && prev_raw_freq == raw_freq) {
 			if (prev_cc == core_count) {
 				struct cpufreq_frequency_table *prev =
 							&c->table[i - 1];
@@ -487,6 +562,18 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 
 		prev_cc = core_count;
 		prev_freq = cur_freq;
+		prev_raw_freq = raw_freq;
+
+#ifdef CONFIG_EFFCPU
+		/*
+		 * Hide unlisted rows but keep them in the table, so row numbers
+		 * still match the LUT the hardware uses.
+		 */
+		if (!qcom_cpufreq_hw_is_eff_freq(eff_table, eff_len, raw_freq)) {
+			c->table[i].frequency = CPUFREQ_ENTRY_INVALID;
+			continue;
+		}
+#endif
 
 		for_each_cpu(cpu, &c->related_cpus) {
 			cpu_dev = get_cpu_device(cpu);
@@ -499,6 +586,9 @@ static int qcom_cpufreq_hw_read_lut(struct platform_device *pdev,
 
 	c->lut_max_entries = i;
 	c->table[i].frequency = CPUFREQ_TABLE_END;
+#ifdef CONFIG_EFFCPU
+	kfree(eff_table);
+#endif
 
 	if (c->skip_data.skip) {
 		pr_info("%s Skip: Index[%u], Frequency[%u], Core Count %u, Final Index %u Actual Index %u Prev_Freq[%u] Prev_Index[%u] Prev_CC[%u]\n",
@@ -595,7 +685,7 @@ static int qcom_cpu_resources_init(struct platform_device *pdev,
 	c->xo_rate = xo_rate;
 	c->cpu_hw_rate = cpu_hw_rate;
 
-	ret = qcom_cpufreq_hw_read_lut(pdev, c);
+	ret = qcom_cpufreq_hw_read_lut(pdev, c, index);
 	if (ret) {
 		dev_err(dev, "Domain-%d failed to read LUT\n", index);
 		return ret;

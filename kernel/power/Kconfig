@@ -131,6 +131,15 @@ config PM_AUTOSLEEP
 	Allow the kernel to trigger a system transition into a global sleep
 	state automatically whenever there are no active wakeup sources.
 
+config BOEFFLA_WL_BLOCKER
+	bool "Boeffla generic wakelock blocker"
+	depends on PM_SLEEP
+	help
+	  Lets userspace list wakeup sources by name in
+	  /sys/class/misc/boeffla_wakelock_blocker/wakelock_blocker. Listed
+	  sources can no longer keep the system awake. The lists start
+	  empty, so nothing is blocked by default.
+
 config PM_WAKELOCKS
 	bool "User space wakeup sources interface"
 	depends on PM_SLEEP

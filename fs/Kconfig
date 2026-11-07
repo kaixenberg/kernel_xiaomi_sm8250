@@ -328,4 +328,18 @@ source "fs/nls/Kconfig"
 source "fs/dlm/Kconfig"
 source "fs/unicode/Kconfig"
 
+source "fs/nomount/Kconfig"
+
+config KSU_SUSFS_PRIORITY_UID_FILTER
+	bool "Hide user-defined app uids from the priority syscalls"
+	depends on KSU_SUSFS
+	default y
+	help
+	  Allow hiding user-defined uids from getpriority, setpriority,
+	  ioprio_get and ioprio_set.
+
+	  BakaSU does not define this option or route its command yet. The
+	  option lives here and kernel/reboot.c does the routing until it
+	  does. Remove both when updating to a BakaSU that has them.
+
 endmenu

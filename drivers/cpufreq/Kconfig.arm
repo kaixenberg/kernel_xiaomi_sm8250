@@ -310,6 +310,15 @@ config ARM_QCOM_CPUFREQ_HW
 	 The driver implements the cpufreq interface for this HW engine.
 	 Say Y if you want to support CPUFreq HW.
 
+config EFFCPU
+	bool "Efficient CPU frequency table"
+	depends on ARM_QCOM_CPUFREQ_HW
+	help
+	  Only expose the CPU frequencies listed in the
+	  qcom,effcpufreq-table-<domain> device tree properties, which trade
+	  some peak performance for efficiency. A domain without a table
+	  keeps all of its frequencies.
+
 config ARM_QCOM_CPUFREQ_HW_DEBUG
 	bool "QCOM CPUFreq HW debug"
 	depends on ARM_QCOM_CPUFREQ_HW

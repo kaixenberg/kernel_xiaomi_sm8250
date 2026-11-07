@@ -20,6 +20,7 @@
 #include <linux/gfp.h>
 #include <linux/kernel_stat.h>
 #include <linux/swap.h>
+#include <linux/kfifo.h>
 #include <linux/pagemap.h>
 #include <linux/init.h>
 #include <linux/highmem.h>
@@ -168,7 +169,7 @@ struct scan_control {
 /*
  * From 0 .. 100.  Higher means more swappy.
  */
-int vm_swappiness = 60;
+int vm_swappiness = 85;
 /*
  * The total number of pages which are beyond the high watermark within all
  * zones.
@@ -4267,7 +4268,32 @@ int kswapd_run(int nid)
 		pr_err("Failed to start kswapd on node %d\n", nid);
 		ret = PTR_ERR(pgdat->kswapd);
 		pgdat->kswapd = NULL;
+		return ret;
 	}
+
+#ifdef CONFIG_KCOMPRESSD
+	/* kcompressd is optional: without it, kswapd compresses inline */
+	pgdat->kcompress_fifo = kzalloc(sizeof(*pgdat->kcompress_fifo),
+					GFP_KERNEL);
+	if (!pgdat->kcompress_fifo ||
+	    kfifo_alloc(pgdat->kcompress_fifo,
+			KCOMPRESS_FIFO_SIZE * sizeof(struct page *),
+			GFP_KERNEL)) {
+		pr_err("Failed to allocate kcompressd fifo on node %d\n", nid);
+		kfree(pgdat->kcompress_fifo);
+		pgdat->kcompress_fifo = NULL;
+		return 0;
+	}
+
+	pgdat->kcompressd = kthread_run(kcompressd, pgdat, "kcompressd%d", nid);
+	if (IS_ERR(pgdat->kcompressd)) {
+		pr_err("Failed to start kcompressd on node %d\n", nid);
+		pgdat->kcompressd = NULL;
+		kfifo_free(pgdat->kcompress_fifo);
+		kfree(pgdat->kcompress_fifo);
+		pgdat->kcompress_fifo = NULL;
+	}
+#endif
 	return ret;
 }
 
@@ -4283,6 +4309,17 @@ void kswapd_stop(int nid)
 		kthread_stop(kswapd);
 		NODE_DATA(nid)->kswapd = NULL;
 	}
+
+#ifdef CONFIG_KCOMPRESSD
+	if (NODE_DATA(nid)->kcompressd) {
+		/* kcompressd drains the fifo before it exits */
+		kthread_stop(NODE_DATA(nid)->kcompressd);
+		NODE_DATA(nid)->kcompressd = NULL;
+		kfifo_free(NODE_DATA(nid)->kcompress_fifo);
+		kfree(NODE_DATA(nid)->kcompress_fifo);
+		NODE_DATA(nid)->kcompress_fifo = NULL;
+	}
+#endif
 }
 
 static int __init kswapd_init(void)

@@ -563,4 +563,13 @@ int LZ4_decompress_fast_usingDict(const char *source, char *dest,
 #define LZ4_DISTANCE_MAX 65535	/* set to maximum value by default */
 #endif
 
+#ifdef CONFIG_LZ4_ARM64_NEON
+/* NEON decoder with a checked C tail; same results as the _safe variants. */
+ssize_t LZ4_arm64_decompress_safe(const void *source, void *dest,
+				  size_t inputSize, size_t outputSize, bool dip);
+ssize_t LZ4_arm64_decompress_safe_partial(const void *source, void *dest,
+					  size_t inputSize, size_t outputSize,
+					  bool dip);
+#endif
+
 #endif

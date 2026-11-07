@@ -485,6 +485,9 @@ struct sde_crtc_state {
 	uint32_t num_dim_layers;
 	struct sde_hw_dim_layer dim_layer[SDE_MAX_DIM_LAYERS];
 	struct sde_hw_dim_layer *fod_dim_layer;
+#ifdef CONFIG_DRM_SDE_EXPO
+	struct sde_hw_dim_layer *exposure_dim_layer;
+#endif
 	uint32_t num_ds;
 	uint32_t num_ds_enabled;
 	bool ds_dirty;

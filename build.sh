@@ -1,332 +1,203 @@
-#!/bin/bash
-
-source ../settings.sh
-
+#!/usr/bin/env bash
+# Build and package NidhiKernel. Used as-is by the GitHub workflow.
 #
-#   settings.sh (example)
+#   ./build.sh                     configure, build and zip
+#   ./build.sh --no-package        configure and build only
+#   ./build.sh -- <make targets>   configure, then make these targets only
 #
-# export VERSION="1.x.x"
-# export BUILD=1
-# export PREFIX="e"
-# export DESC="description"
-# export DEVICE="alioth"
-# export TGTOKEN=bot_id
-# export LAST=last commit hash for generation changelog
-# export TYPE="test or early"
-# export LEVEL=1
-# export EXTRA=""
-# export ONLY=""
-# export SHAK=hash commit for squash revert KSU
-# export SHAB=hash commit for 5k battery
+# Settings (environment variables, all optional):
+#   DEVICE        alioth (default, the only supported device), apollo, pipa
+#   KERNEL_NAME   name in uname after the version (default NidhiKernel)
+#   DISABLE       space-separated switches to turn off, e.g. "BBG NTSYNC".
+#                 Each is a CONFIG_ option from
+#                 arch/arm64/configs/vendor/xiaomi/magictime-common.config,
+#                 or NET_EXTRAS for the whole networking extras block.
+#   VARIANT       aosp or miui (default: miui on a *miui* branch, else aosp)
+#   OUT           build directory (default: out)
+#   CLANG_DIR     toolchain root; its bin/ goes first in PATH. Otherwise
+#                 clang, ld.lld and llvm-* must already be in PATH.
+#   JOBS          parallel jobs (default: nproc)
+#   PODMAN_IMAGE  run the build inside this podman image, e.g.
+#                 localhost/kernel-dev-env (the source, OUT, CLANG_DIR and
+#                 CCACHE_DIR are mounted at the same paths)
+#   KBUILD_BUILD_USER, KBUILD_BUILD_HOST   shown in /proc/version
 #
+# Switches that are always available:
+#   KSU KSU_SUSFS NOMOUNT BBG REKERNEL DROIDSPACES EFFCPU EFFGPU KCOMPRESSD
+#   LZ4_ARM64_NEON TCP_CONG_BBR ARM64_TUNE_SM8250 K11A_PANEL_90HZ
+#   DRM_SDE_EXPO DRM_MSM_BACKLIGHT_MIN BOEFFLA_WL_BLOCKER NTSYNC
+#   NTSYNC_APP_ACCESS NET_EXTRAS
+set -euo pipefail
 
-MAIN=/home/timisong
+SRC=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+cd "$SRC"
 
-KERNEL=$PWD
+PACKAGE=1
+TARGETS=()
+while [ $# -gt 0 ]; do
+    case $1 in
+        --no-package) PACKAGE=0 ;;
+        --) shift; TARGETS=("$@"); PACKAGE=0; break ;;
+        -h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
+        *) echo "Unknown option: $1 (see --help)" >&2; exit 1 ;;
+    esac
+    shift
+done
 
-CLANG=$MAIN/clang
-GCC_ARM=$MAIN/arm-linux-androideabi-4.9
-GCC_AARCH64=$MAIN/aarch64-linux-android-4.9
+DEVICE=${DEVICE:-alioth}
+KERNEL_NAME=${KERNEL_NAME:-NidhiKernel}
+OUT=${OUT:-out}
+mkdir -p "$OUT"
+OUT=$(cd "$OUT" && pwd)
+JOBS=${JOBS:-$(nproc)}
+BRANCH=${GITHUB_REF_NAME:-$(git branch --show-current 2>/dev/null || true)}
+case ${VARIANT:-} in
+    aosp|miui) ;;
+    '') case $BRANCH in *miui*) VARIANT=miui ;; *) VARIANT=aosp ;; esac ;;
+    *) echo "VARIANT must be aosp or miui" >&2; exit 1 ;;
+esac
 
-check_and_clone() {
-    local dir=$1
-    local repo=$2
-    local name=$3
-
-    if [ ! -d $dir ]; then
-        echo Папка $dir не существует. Клонирование $repo
-        cd $MAIN
-        git clone $repo $name
-    fi
-}
-
-check_and_wget() {
-    local dir=$1
-    local repo=$2
-
-    if [ ! -d $dir ]; then
-        echo Папка $dir не существует. Клонирование $repo
-        mkdir $dir
-        cd $dir
-        wget -O clang.tar.gz $repo
-        tar -zxvf clang.tar.gz
-        rm -rf clang.tar.gz
-        cd ../kernel_xiaomi_sm8250
-    fi
-}
-
-build() {
-    START=$(date +%s)
-    git log $LAST..HEAD > ../changelog.txt
-    BRANCH=$(git branch --show-current)
-
-    MAGICTIME=$MAIN/MagicTime-$DEVICE
-
-    ANYKERNEL_LINK=https://github.com/TIMISONG-dev/MagicTime-$DEVICE
-
-    if [ ! -d $MAGICTIME ]; then
-        mkdir -p $MAGICTIME
-
-        if [ ! -d $MAGICTIME/Anykernel ]; then
-            git clone $ANYKERNEL_LINK $MAGICTIME/Anykernel
-
-            mv $MAGICTIME/Anykernel/* $MAGICTIME/
-
-            rm -rf $MAGICTIME/Anykernel
-        fi
-    else
-        if [ -d $MAGICTIME/.git ]; then
-            rm -rf $MAGICTIME/.git
-        fi
-    fi
-
-    if [ $DEVICE = pipa ]; then
-        IMG=$MAGICTIME/kernels/Image
-        DTB=$MAGICTIME/kernels/dtb
-        DTBO=$MAGICTIME/kernels/dtbo.img
-    else
-        IMG=$MAGICTIME/Image
-        DTB=$MAGICTIME/dtb
-        DTBO=$MAGICTIME/dtbo.img
-    fi
-
-    make O="$OUT" \
-            ${DEVICE}_defconfig \
-            vendor/xiaomi/magictime-common.config
-
-    # Компиляция ядра
-    make -j $(nproc) \
-                O="$OUT" \
-                CC="ccache clang" \
-                HOSTCC=gcc \
-                LD=ld.lld \
-                AS=llvm-as \
-                AR=llvm-ar \
-                NM=llvm-nm \
-                OBJCOPY=llvm-objcopy \
-                OBJDUMP=llvm-objdump \
-                STRIP=llvm-strip \
-                LLVM=1 \
-                LLVM_IAS=1 \
-                V=$VERBOSE 2>&1 | tee build.log
-
-    find $DTS -name '*.dtb' -exec cat {} + > $DTB
-    find $DTS -name 'Image' -exec cat {} + > $IMG
-    find $DTS -name 'dtbo.img' -exec cat {} + > $DTBO
-
-    END=$(date +%s)
-    ELAPSED=$((END - START))
-
-    CAPTION="MagicTime ${VERSION}${PREFIX}${BUILD}"
-    CAPTION="${CAPTION}"$'\n'"desc: ${DESC}"$'\n'"branch: ${BRANCH}"$'\n'"Длительность: $ELAPSED секунд"
-    CHANGELOG="../changelog.txt"
-
-    if grep -q -E "Ошибка 2|Error 2" build.log; then
-        echo Ошибка: Сборка завершилась с ошибкой
-
-        if [ "$TYPE" = "early" ]; then
-            curl -s -X POST https://api.telegram.org/bot$TGTOKEN/sendMessage \
-            -d chat_id=@magictimekernel \
-            -d text="Ошибка в компиляции!" \
-            -d message_thread_id=38153
-
-            curl -s -X POST https://api.telegram.org/bot$TGTOKEN/sendDocument?chat_id=@magictimekernel \
-            -F document=@./build.log \
-            -F message_thread_id=38153
-
-            if [ -s "$CHANGELOG" ]; then
-                curl -s -X POST https://api.telegram.org/bot$TGTOKEN/sendDocument?chat_id=@magictimekernel \
-                -F document=@../changelog.txt \
-                -F message_thread_id=38153
-            fi
-        else
-            curl -s -X POST https://api.telegram.org/bot$TGTOKEN/sendMessage \
-            -d chat_id=@magictimekernel \
-            -d text="Ошибка в компиляции!" \
-            -d message_thread_id=79346
-
-            curl -s -X POST https://api.telegram.org/bot$TGTOKEN/sendDocument?chat_id=@magictimekernel \
-            -F document=@./build.log \
-            -F message_thread_id=79346
-        fi            
-    else
-        echo Общее время выполнения: $ELAPSED секунд
-
-        cd $MAGICTIME
-
-        if [ "$TYPE" = "test" ]; then
-            7z a -mx9 MagicTime-$DEVICE-$FILE.zip * -x!*.zip
-        else
-            7z a -mx9 MagicTime-$DEVICE-$BUILD_DATE.zip * -x!*.zip
-        fi
-
-        if [ "$TYPE" = "test" ]; then
-            curl -s -X POST https://api.telegram.org/bot$TGTOKEN/sendDocument?chat_id=@magictimekernel \
-            -F document=@./MagicTime-$DEVICE-$FILE.zip \
-            -F caption="${CAPTION}" \
-            -F message_thread_id=79346
-        else
-            curl -s -X POST https://api.telegram.org/bot$TGTOKEN/sendDocument?chat_id=@magictimekernel \
-            -F document=@./MagicTime-$DEVICE-$BUILD_DATE.zip \
-            -F caption="${CAPTION}" \
-            -F message_thread_id=38153
-        fi
-
-        if [ "$TYPE" = "early" ] && [ -s "$CHANGELOG" ]; then
-            curl -s -X POST https://api.telegram.org/bot$TGTOKEN/sendDocument?chat_id=@magictimekernel \
-            -F document=@"$CHANGELOG" \
-            -F caption="Changelog" \
-            -F message_thread_id=38153
-        fi
-
-        if [ "$TYPE" = "test" ]; then
-            rm -rf MagicTime-$DEVICE-$FILE.zip
-        else
-            rm -rf MagicTime-$DEVICE-$BUILD_DATE.zip
-        fi
-
-        BUILD=$((BUILD + 1))
-
-        cd $KERNEL
-        LAST=$(git log -1 --format=%H)
-
-        sed -i "s/LAST=.*/LAST=$LAST/" ../settings.sh
-        sed -i "s/BUILD=.*/BUILD=$BUILD/" ../settings.sh
-    fi
-}
-
-check_and_wget $CLANG \
-    https://github.com/liliumproject/clang/releases/download/20250912/lilium_clang-20250912.tar.gz
-check_and_clone $GCC_ARM \
-    https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 \
-        arm-linux-androideabi-4.9
-check_and_clone $GCC_AARCH64 \
-    https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 \
-        aarch64-linux-android-4.9
-
-export PATH=$CLANG/bin:$GCC_AARCH64/bin:$GCC_ARM/bin:$PATH
-export ARCH=arm64
-export CROSS_COMPILE=aarch64-linux-gnu-
-export CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
-export KBUILD_BUILD_USER=TIMISONG
-export KBUILD_BUILD_HOST=timisong-dev
-
-BUILD_DATE=$(date '+%Y-%m-%d_%H-%M-%S')
-
-OUT=out
-
-# Early build
-if [ $LEVEL = 1 ] && [ $TYPE = early ]; then
-    build
-    clear
+case $DEVICE in
+    alioth) NAMES="alioth aliothin" ;;
+    apollo) NAMES="apollo apollon" ;;
+    pipa) NAMES="pipa" ;;
+    *) echo "Unknown DEVICE: $DEVICE (alioth, apollo or pipa)" >&2; exit 1 ;;
+esac
+if ! [[ $KERNEL_NAME =~ ^[A-Za-z0-9._+-]{1,32}$ ]]; then
+    echo "KERNEL_NAME may only use letters, digits and . _ + - (max 32)" >&2
+    exit 1
 fi
+[ "$DEVICE" = alioth ] || echo "warning: $DEVICE is not officially supported: the build may fail or not boot" >&2
 
-# Test builds
-if [ "$TYPE" = "test" ]; then
-    # Format: "DEVICE:BRANCH:MOD_KSU:MOD_BATTERY:DESC:FILE"
-    CONFIGS=(
-        "alioth:magictime-new:ksu:stk:POCO F3 AOSP:AOSP-KSU"
-        "alioth:magictime-new:no_ksu:stk:POCO F3 AOSP without KSU:AOSP-NONKSU"
-        "alioth:magictime-new:ksu:5k:POCO F3 AOSP 5k battery:AOSP-KSU-5K"
-        "alioth:magictime-new:no_ksu:5k:POCO F3 AOSP without KSU 5k battery:AOSP-NONKSU-5K"
-        "alioth:magictime-miui:ksu:stk:POCO F3 MIUI:MIUI-KSU"
-        "alioth:magictime-miui:no_ksu:stk:POCO F3 MIUI without KSU:MIUI-NONKSU"
-        "alioth:magictime-miui:ksu:5k:POCO F3 MIUI 5k battery:MIUI-KSU-5K"
-        "alioth:magictime-miui:no_ksu:5k:POCO F3 MIUI without KSU 5k battery:MIUI-NONKSU-5K"
-
-        "pipa:magictime-new:ksu:stk:Mi Pad 6 AOSP:AOSP-KSU"
-        "pipa:magictime-new:no_ksu:stk:Mi Pad 6 AOSP without KSU:AOSP-NONKSU"
-        "pipa:magictime-miui:ksu:stk:Mi Pad 6 MIUI:MIUI-KSU"
-        "pipa:magictime-miui:no_ksu:stk:Mi Pad 6 MIUI without KSU:MIUI-NONKSU"
-
-	    "apollo:magictime-new:ksu:stk:Mi 10T AOSP:AOSP-KSU"
-	    "apollo:magictime-new:no_ksu:stk:Mi 10T AOSP without KSU:AOSP-NONKSU"
-        "apollo:magictime-miui:ksu:stk:Mi 10T MIUI:MIUI-KSU"
-	    "apollo:magictime-miui:no_ksu:stk:Mi 10T MIUI without KSU:MIUI-NONKSU"
-    )
-
-    if [ -n "$ONLY" ]; then
-        TARGET_CONFIGS=()
-
-        if [[ "$ONLY" =~ ^[0-9]+$ ]]; then
-            IDX_ONLY=$((ONLY - 1))
-            if [ "$IDX_ONLY" -ge 0 ] && [ "$IDX_ONLY" -lt "${#CONFIGS[@]}" ]; then
-                TARGET_CONFIGS+=("${CONFIGS[$IDX_ONLY]}")
-            else
-                echo "Ошибка: ONLY=$ONLY выходит за массив (элементов: ${#CONFIGS[@]})"
-                exit 1
-            fi
-        else
-            for cfg in "${CONFIGS[@]}"; do
-                if [[ "$cfg" == *"$ONLY"* ]]; then
-                    TARGET_CONFIGS+=("$cfg")
-                fi
-            done
-        fi
-
-        if [ "${#TARGET_CONFIGS[@]}" -eq 0 ]; then
-            echo "Ошибка: Нет конфигураций, соответствующих ONLY='$ONLY'"
-            exit 1
-        fi
-
-        CONFIGS=("${TARGET_CONFIGS[@]}")
-        LEVEL=1
-    fi
-
-    while true; do
-        IDX=$((LEVEL - 1))
-
-        if [ "$IDX" -ge "${#CONFIGS[@]}" ]; then
-            if [ -z "$ONLY" ]; then
-                LEVEL=1
-                EXTRA=""
-                sed -i "s/LEVEL=.*/LEVEL=1/" ../settings.sh
-                sed -i "s/EXTRA=.*/EXTRA=\"\"/ " ../settings.sh
-            fi
-            git checkout magictime-new >/dev/null 2>&1
-            git reset --hard origin/magictime-new >/dev/null 2>&1
-            clear
-            exit 0
-        fi
-
-        IFS=':' read -r DEVICE BRANCH MOD_KSU MOD_BATTERY DESC FILE <<< "${CONFIGS[$IDX]}"
-
-        echo "=== Сборка уровня $LEVEL / ${#CONFIGS[@]}: $DESC ==="
-
-        git checkout "$BRANCH" >/dev/null 2>&1
-        git fetch origin "$BRANCH" >/dev/null 2>&1 || true
-        git reset --hard "origin/$BRANCH" >/dev/null 2>&1
-
-        if [ "$MOD_BATTERY" = "5k" ]; then
-            git cherry-pick "$SHAB" >/dev/null 2>&1
-            if [ $? -ne 0 ]; then
-                git cherry-pick --abort >/dev/null 2>&1
-                exit 1
-            fi
-        fi
-
-        if [ "$MOD_KSU" = "no_ksu" ]; then
-            git cherry-pick "$SHAK" >/dev/null 2>&1
-            if [ $? -ne 0 ]; then
-                git cherry-pick --abort >/dev/null 2>&1
-                exit 1
-            fi
-        fi
-
-        if [ "$EXTRA" = "!4" ]; then
-            git cherry-pick "$SHAK" || true
-        elif [ "$EXTRA" = "!10" ]; then
-            git cherry-pick "$SHAK" || true
-        fi
-
-        if build; then
-            NEXT_LEVEL=$((LEVEL + 1))
-            sed -i "s/LEVEL=.*/LEVEL=$NEXT_LEVEL/" ../settings.sh
-            LEVEL=$NEXT_LEVEL
-            clear
-        else
-            echo "Ошибка сборки на уровне $LEVEL ($DESC)"
-            exit 1
-        fi
+# Re-run inside the container, with every path mounted where it is now.
+if [ -n "${PODMAN_IMAGE:-}" ] && [ -z "${NIDHI_IN_CONTAINER:-}" ]; then
+    mounts=()
+    for d in "$SRC" "$OUT" ${CLANG_DIR:+"$CLANG_DIR"} ${CCACHE_DIR:+"$CCACHE_DIR"}; do
+        mkdir -p "$d"
+        mounts+=(-v "$d:$d")
     done
+    args=()
+    [ $PACKAGE = 1 ] || args+=(--no-package)
+    [ ${#TARGETS[@]} = 0 ] || args+=(-- "${TARGETS[@]}")
+    exec podman run --rm --userns=keep-id --security-opt label=disable "${mounts[@]}" \
+        -e NIDHI_IN_CONTAINER=1 -e DEVICE -e KERNEL_NAME -e DISABLE -e VARIANT="$VARIANT" \
+        -e OUT="$OUT" -e CLANG_DIR -e JOBS="$JOBS" -e CCACHE_DIR -e CCACHE_MAXSIZE \
+        -e GITHUB_REF_NAME="$BRANCH" \
+        -e KBUILD_BUILD_USER="${KBUILD_BUILD_USER:-$(id -un)}" \
+        -e KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST:-podman}" \
+        -w "$SRC" "$PODMAN_IMAGE" "$SRC/build.sh" "${args[@]}"
 fi
+
+if [ -n "${CLANG_DIR:-}" ]; then
+    export PATH="$CLANG_DIR/bin:$PATH"
+    export LD_LIBRARY_PATH="$CLANG_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
+command -v clang >/dev/null || { echo "clang is not in PATH; set CLANG_DIR" >&2; exit 1; }
+CC=clang
+command -v ccache >/dev/null && CC="ccache clang"
+
+# One set of variables for every make call, so Kconfig sees the same Clang
+# as the build and keeps ThinLTO and CFI.
+MAKE_ARGS=(
+    O="$OUT" ARCH=arm64
+    CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
+    CC="$CC" HOSTCC=gcc HOSTCXX=g++ LD=ld.lld AS=llvm-as AR=llvm-ar NM=llvm-nm
+    OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip LLVM=1 LLVM_IAS=1
+    KBUILD_BUILD_USER="${KBUILD_BUILD_USER:-$(id -un)}"
+    KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST:-$(uname -n)}"
+)
+
+# --- Configure -------------------------------------------------------------
+# Switches go in with the defconfig merge: disabling them afterwards would
+# leave everything they select turned on.
+FRAGMENT_NAME=nidhi-variant.config
+FRAGMENT=arch/arm64/configs/$FRAGMENT_NAME
+trap 'rm -f "$SRC/$FRAGMENT"' EXIT
+tr -d '\r' < arch/arm64/configs/vendor/xiaomi/magictime-common.config > "$FRAGMENT"
+sed -i "s|^CONFIG_LOCALVERSION=.*|CONFIG_LOCALVERSION=\"-$KERNEL_NAME\"|" "$FRAGMENT"
+
+CHECK=()
+for opt in ${DISABLE:-}; do
+    case $opt in
+        NET_EXTRAS)
+            # The block ends at the first blank line
+            sed -i '/^# Networking extras/,/^$/d' "$FRAGMENT"
+            CHECK+=(IP_SET IP_NF_TARGET_TTL IP6_NF_TARGET_HL NET_ACT_CONNMARK CIFS)
+            continue ;;
+        *[!A-Z0-9_]*|'')
+            echo "Bad switch name: $opt" >&2; exit 1 ;;
+    esac
+    grep -q "^CONFIG_$opt=" "$FRAGMENT" || { echo "Unknown switch: $opt" >&2; exit 1; }
+    sed -i "/^CONFIG_$opt=/d" "$FRAGMENT"
+    echo "# CONFIG_$opt is not set" >> "$FRAGMENT"
+    CHECK+=("$opt")
+    case $opt in
+        # KernelSU needs some hook: without SuSFS use the manual hooks
+        KSU_SUSFS) echo "CONFIG_KSU_MANUAL_HOOK=y" >> "$FRAGMENT" ;;
+        # The defconfig pass would otherwise keep baseband_guard in the LSM list
+        BBG) echo 'CONFIG_LSM="lockdown,yama,loadpin,safesetid,integrity,selinux,smack,tomoyo,apparmor,bpf"' >> "$FRAGMENT" ;;
+        TCP_CONG_BBR) printf '# CONFIG_DEFAULT_BBR is not set\nCONFIG_DEFAULT_CUBIC=y\n' >> "$FRAGMENT" ;;
+    esac
+done
+
+make "${MAKE_ARGS[@]}" "${DEVICE}_defconfig" "$FRAGMENT_NAME"
+rm -f "$FRAGMENT"
+
+grep -E '^CONFIG_(CC_IS_CLANG|LTO_CLANG|THINLTO|CFI_CLANG)=' "$OUT/.config"
+bad=0
+for opt in "${CHECK[@]}"; do
+    if grep -qE "^CONFIG_$opt=[ym]" "$OUT/.config"; then
+        echo "error: CONFIG_$opt is still enabled" >&2
+        bad=1
+    fi
+done
+[ $bad = 0 ] || exit 1
+echo "Disabled: ${DISABLE:-none}"
+
+# --- Build -----------------------------------------------------------------
+if [ ${#TARGETS[@]} -gt 0 ]; then
+    make "${MAKE_ARGS[@]}" -j"$JOBS" "${TARGETS[@]}"
+    exit 0
+fi
+make "${MAKE_ARGS[@]}" -j"$JOBS"
+[ $PACKAGE = 1 ] || exit 0
+
+# --- Package ---------------------------------------------------------------
+RELEASE=$(cat "$OUT/include/config/kernel.release")
+BOOT=$OUT/arch/arm64/boot
+ZIP_NAME=NidhiKernel-$VARIANT-$DEVICE-$(date -u +%Y%m%d-%H%M)
+STAGE=$OUT/ak3
+[ -f AnyKernel3/anykernel.sh ] || { echo "The AnyKernel3 submodule is empty: git submodule update --init" >&2; exit 1; }
+
+rm -rf "$STAGE"
+mkdir -p "$STAGE"
+cp -r AnyKernel3/. "$STAGE/"
+rm -rf "$STAGE/.git" "$STAGE/README.md"
+cp "$BOOT/Image" "$BOOT/dtbo.img" "$STAGE/"
+# pipa takes its dtb from the kernel; AnyKernel3 repacks vendor_boot
+[ "$DEVICE" != pipa ] || find "$OUT/arch/arm64/boot/dts/vendor/qcom" -name '*.dtb' -exec cat {} + > "$STAGE/dtb"
+
+sed -i '/^device\.name[0-9]=/d' "$STAGE/anykernel.sh"
+n=1
+for name in $NAMES; do
+    sed -i "/^do\.cleanuponabort=/a device.name$n=$name" "$STAGE/anykernel.sh"
+    n=$((n + 1))
+done
+sed -i "s|^kernel.string=.*|kernel.string=NidhiKernel $RELEASE ($VARIANT, $DEVICE)|" "$STAGE/anykernel.sh"
+sh -n "$STAGE/anykernel.sh"
+grep -E '^(kernel\.string|device\.name)' "$STAGE/anykernel.sh"
+
+ZIP=$OUT/$ZIP_NAME.zip
+rm -f "$ZIP"
+(cd "$STAGE" && zip -r9q "$ZIP" .)
+
+if [ -n "${GITHUB_OUTPUT:-}" ]; then
+    {
+        echo "zip_name=$ZIP_NAME"
+        echo "stage=$STAGE"
+        echo "release=$RELEASE"
+        echo "variant=$VARIANT"
+    } >> "$GITHUB_OUTPUT"
+fi
+echo "Kernel: $RELEASE ($VARIANT, $DEVICE)"
+echo "Zip: $ZIP"

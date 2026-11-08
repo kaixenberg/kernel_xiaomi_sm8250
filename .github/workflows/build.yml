@@ -90,10 +90,6 @@ on:
 permissions:
   contents: read
 
-env:
-  CLANG_URL: https://github.com/liliumproject/clang/releases/download/20250912/lilium_clang-20250912.tar.gz
-  CLANG_KEY: lilium-clang-20250912
-
 jobs:
   build:
     runs-on: ubuntu-24.04
@@ -101,9 +97,6 @@ jobs:
     env:
       DEVICE: ${{ inputs.device }}
       KERNEL_NAME: ${{ inputs.kernel_name }}
-      CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_MAXSIZE: 2G
-      CCACHE_COMPILERCHECK: string:lilium-clang-20250912
     steps:
       - name: Check out the kernel
         uses: actions/checkout@v4
@@ -111,37 +104,10 @@ jobs:
           submodules: recursive
           fetch-depth: 1
 
-      - name: Fetch KernelSU history
-        # BakaSU's version code is its commit count
-        run: git -C KernelSU fetch --unshallow --tags || git -C KernelSU fetch --tags
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq bc bison flex libssl-dev libelf-dev \
-            cpio zip ccache python3 lz4
-
-      - name: Restore Clang
-        id: clang
-        uses: actions/cache@v4
+      - name: Set up the build
+        uses: ./.github/actions/setup-build
         with:
-          path: ${{ runner.temp }}/clang
-          key: ${{ env.CLANG_KEY }}
-
-      - name: Download Clang
-        if: steps.clang.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p "$RUNNER_TEMP/clang"
-          curl -fsSL "$CLANG_URL" | tar -xz -C "$RUNNER_TEMP/clang"
-
-      - name: Restore ccache
-        uses: actions/cache@v4
-        with:
-          path: .ccache
-          key: ccache-${{ inputs.device }}-${{ github.ref_name }}-${{ github.run_id }}
-          restore-keys: |
-            ccache-${{ inputs.device }}-${{ github.ref_name }}-
-            ccache-${{ inputs.device }}-
+          cache-key: ${{ inputs.device }}-${{ github.ref_name }}
 
       - name: Pick the switches to turn off
         env:
@@ -173,13 +139,9 @@ jobs:
 
       - name: Build
         id: build
-        env:
-          CLANG_DIR: ${{ runner.temp }}/clang
-          KBUILD_BUILD_USER: github
-          KBUILD_BUILD_HOST: actions
         run: |
           ccache -z
-          ./build.sh 2>&1 | tee "$RUNNER_TEMP/build.log"
+          ./build.sh
           ccache -s | head -5
 
       - name: Summary
@@ -187,12 +149,14 @@ jobs:
           ZIP_NAME: ${{ steps.build.outputs.zip_name }}
           RELEASE: ${{ steps.build.outputs.release }}
           VARIANT: ${{ steps.build.outputs.variant }}
+          KSU_NAME: ${{ steps.build.outputs.ksu_name }}
+          KSU_CODE: ${{ steps.build.outputs.ksu_code }}
         run: |
           {
             echo "### $ZIP_NAME"
             echo "- uname: \`$RELEASE\`"
             echo "- Branch: \`$GITHUB_REF_NAME\` ($VARIANT)"
-            echo "- BakaSU version code: $(grep -m1 -o 'version code: [0-9]*' "$RUNNER_TEMP/build.log" 2>/dev/null || echo unknown)"
+            [ -z "$KSU_CODE" ] || echo "- BakaSU: $KSU_NAME, version code **$KSU_CODE** (manager CI builds: https://t.me/BakaSU_Grp)"
             echo "- Disabled: ${DISABLE:-none}"
             [ "$DEVICE" = alioth ] || echo "- **$DEVICE is not officially supported: this build may not boot.**"
           } >> "$GITHUB_STEP_SUMMARY"

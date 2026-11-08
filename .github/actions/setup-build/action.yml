@@ -1,0 +1,57 @@
+name: Set up the NidhiKernel build
+description: >
+  Fetch BakaSU's history (its version code is its commit count), install the
+  build dependencies, and restore Lilium Clang and ccache. Exports CLANG_DIR
+  and the ccache settings for build.sh.
+inputs:
+  cache-key:
+    description: ccache key prefix, e.g. alioth-nidhi
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Fetch KernelSU history
+      shell: bash
+      run: git -C KernelSU fetch --unshallow --tags || git -C KernelSU fetch --tags
+
+    - name: Install build dependencies
+      shell: bash
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq bc bison flex libssl-dev libelf-dev \
+          cpio zip ccache python3 lz4
+
+    - name: Restore Clang
+      id: clang
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/clang
+        key: lilium-clang-20250912
+
+    - name: Download Clang
+      if: steps.clang.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        mkdir -p "$RUNNER_TEMP/clang"
+        curl -fsSL https://github.com/liliumproject/clang/releases/download/20250912/lilium_clang-20250912.tar.gz \
+          | tar -xz -C "$RUNNER_TEMP/clang"
+
+    - name: Restore ccache
+      uses: actions/cache@v4
+      with:
+        path: .ccache
+        key: ccache-${{ inputs.cache-key }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: |
+          ccache-${{ inputs.cache-key }}-
+
+    - name: Export the build settings
+      shell: bash
+      run: |
+        {
+          echo "CLANG_DIR=$RUNNER_TEMP/clang"
+          echo "CCACHE_DIR=$GITHUB_WORKSPACE/.ccache"
+          echo "CCACHE_MAXSIZE=2G"
+          echo "CCACHE_COMPILERCHECK=string:lilium-clang-20250912"
+          echo "KBUILD_BUILD_USER=github"
+          echo "KBUILD_BUILD_HOST=actions"
+        } >> "$GITHUB_ENV"

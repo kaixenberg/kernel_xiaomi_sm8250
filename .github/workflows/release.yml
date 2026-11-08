@@ -1,0 +1,177 @@
+name: Release NidhiKernel
+
+# Builds the alioth kernel with every feature on, from the tips of nidhi
+# (AOSP) and/or nidhi-miui (MIUI), tags them and publishes a release.
+# Tags follow the existing style: <version> on nidhi, <version>-miui on
+# nidhi-miui.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version, e.g. 3.1 (becomes the tag; no leading v)"
+        type: string
+        required: true
+      variant:
+        description: "What to build"
+        type: choice
+        options: [Both, AOSP, MIUI]
+        default: Both
+      prerelease:
+        description: "Mark as a pre-release"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      tag: ${{ steps.plan.outputs.tag }}
+    steps:
+      - name: Check the version and plan the builds
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          VARIANT: ${{ inputs.variant }}
+        run: |
+          if ! [[ "$VERSION" =~ ^[0-9]+(\.[0-9]+)*$ ]]; then
+            echo "::error::version must look like 3.1 (digits and dots, no v)"
+            exit 1
+          fi
+          aosp='{"variant":"aosp","branch":"nidhi"}'
+          miui='{"variant":"miui","branch":"nidhi-miui"}'
+          case $VARIANT in
+            Both) matrix="[$aosp,$miui]"; tags="$VERSION $VERSION-miui"; tag=$VERSION ;;
+            AOSP) matrix="[$aosp]"; tags="$VERSION"; tag=$VERSION ;;
+            MIUI) matrix="[$miui]"; tags="$VERSION-miui"; tag=$VERSION-miui ;;
+          esac
+          for t in $tags; do
+            if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$t" >/dev/null 2>&1; then
+              echo "::error::tag $t already exists"
+              exit 1
+            fi
+          done
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: true
+      matrix:
+        include: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    env:
+      DEVICE: alioth
+      VARIANT: ${{ matrix.variant }}
+      BRANCH: ${{ matrix.branch }}
+    steps:
+      - name: Check out ${{ matrix.branch }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.branch }}
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Set up the build
+        uses: ./.github/actions/setup-build
+        with:
+          cache-key: alioth-${{ matrix.branch }}
+
+      - name: Build
+        id: build
+        run: ./build.sh
+
+      - name: Collect the release files
+        env:
+          VERSION: ${{ inputs.version }}
+          ZIP: ${{ steps.build.outputs.zip }}
+          RELEASE: ${{ steps.build.outputs.release }}
+          KSU_CODE: ${{ steps.build.outputs.ksu_code }}
+          KSU_NAME: ${{ steps.build.outputs.ksu_name }}
+          CLANG: ${{ steps.build.outputs.clang }}
+        run: |
+          mkdir dist
+          name="NidhiKernel-$VERSION-$VARIANT-alioth.zip"
+          cp "$ZIP" "dist/$name"
+          python3 - <<'PY' > "dist/$VARIANT.json"
+          import json, os, subprocess
+          def sh(*a): return subprocess.check_output(a, text=True).strip()
+          print(json.dumps({
+              "variant": os.environ["VARIANT"],
+              "branch": os.environ["BRANCH"],
+              "sha": sh("git", "rev-parse", "HEAD"),
+              "zip": f"NidhiKernel-{os.environ['VERSION']}-{os.environ['VARIANT']}-alioth.zip",
+              "release": os.environ["RELEASE"],
+              "ksu_code": os.environ["KSU_CODE"],
+              "ksu_name": os.environ["KSU_NAME"],
+              "ksu_sha": sh("git", "-C", "KernelSU", "rev-parse", "HEAD"),
+              "ksu_url": sh("git", "config", "-f", ".gitmodules", "submodule.KernelSU.url"),
+              "susfs": sh("sed", "-n", 's/^#define SUSFS_VERSION "\\(.*\\)"/\\1/p', "include/linux/susfs.h"),
+              "clang": os.environ["CLANG"],
+          }, indent=2))
+          PY
+          cat "dist/$VARIANT.json"
+          (cd dist && sha256sum "$name" > "$name.sha256")
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.variant }}
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the release tooling
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github
+          fetch-depth: 1
+
+      - name: Download the builds
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Write the release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: python3 .github/release-notes.py dist > notes.md && cat notes.md
+
+      - name: Tag and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          for f in dist/*.json; do
+            variant=$(jq -r .variant "$f")
+            sha=$(jq -r .sha "$f")
+            t=$VERSION
+            [ "$variant" = miui ] && t=$VERSION-miui
+            gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$t" -f sha="$sha" >/dev/null
+            echo "Tagged $t at $sha"
+          done
+          flags=()
+          [ "$PRERELEASE" = true ] && flags+=(--prerelease)
+          gh release create "$TAG" -R "$GITHUB_REPOSITORY" --verify-tag \
+            --title "NidhiKernel $VERSION" --notes-file notes.md "${flags[@]}" \
+            dist/*.zip dist/*.sha256

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.svg" alt="NidhiKernel: custom kernel for POCO F3, Mi 11X and Redmi K40" width="100%">
+</p>
+
 # NidhiKernel
 
 A custom kernel for **alioth** (POCO F3 / Mi 11X / Redmi K40, Snapdragon 870),

@@ -21,6 +21,9 @@
 #include <linux/spinlock.h>
 #include <linux/uaccess.h>
 #include <linux/compat.h>
+#include <linux/namei.h>
+#include <linux/workqueue.h>
+#include <linux/xattr.h>
 #include <uapi/linux/ntsync.h>
 
 #ifndef lockdep_assert
@@ -1224,7 +1227,62 @@ static struct miscdevice ntsync_misc = {
 	.mode		= 0666,
 };
 
-module_misc_device(ntsync_misc);
+#ifdef CONFIG_NTSYNC_APP_ACCESS
+#define NTSYNC_PERM_TRIES	60
+
+static void ntsync_fix_perms(struct work_struct *work);
+static DECLARE_DELAYED_WORK(ntsync_perm_work, ntsync_fix_perms);
+static unsigned int ntsync_perm_tries;
+
+/* ueventd creates the node some time after us, so poll until it exists. */
+static void ntsync_fix_perms(struct work_struct *work)
+{
+	static const char ctx[] = "u:object_r:gpu_device:s0";
+	struct inode *inode;
+	struct path path;
+	int ret;
+
+	if (kern_path("/dev/" NTSYNC_NAME, LOOKUP_FOLLOW, &path)) {
+		if (++ntsync_perm_tries < NTSYNC_PERM_TRIES)
+			schedule_delayed_work(&ntsync_perm_work, HZ);
+		else
+			pr_warn("ntsync: /dev/%s never appeared\n", NTSYNC_NAME);
+		return;
+	}
+
+	inode = d_backing_inode(path.dentry);
+	inode_lock(inode);
+	ret = __vfs_setxattr_noperm(path.dentry, XATTR_NAME_SELINUX,
+				    ctx, sizeof(ctx), 0);
+	inode->i_mode = (inode->i_mode & ~S_IALLUGO) | 0666;
+	inode_unlock(inode);
+	path_put(&path);
+
+	if (ret)
+		pr_warn("ntsync: relabelling /dev/%s failed: %d\n",
+			NTSYNC_NAME, ret);
+	else
+		pr_info("ntsync: /dev/%s opened up for apps\n", NTSYNC_NAME);
+}
+#endif
+
+static int __init ntsync_init(void)
+{
+	int ret = misc_register(&ntsync_misc);
+
+#ifdef CONFIG_NTSYNC_APP_ACCESS
+	if (!ret)
+		schedule_delayed_work(&ntsync_perm_work, HZ);
+#endif
+	return ret;
+}
+module_init(ntsync_init);
+
+static void __exit ntsync_exit(void)
+{
+	misc_deregister(&ntsync_misc);
+}
+module_exit(ntsync_exit);
 
 MODULE_AUTHOR("Elizabeth Figura <zfigura@codeweavers.com>");
 MODULE_DESCRIPTION("Kernel driver for NT synchronization primitives");

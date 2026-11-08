@@ -658,6 +658,18 @@ config NTSYNC
 
 	  If unsure, say N.
 
+config NTSYNC_APP_ACCESS
+	bool "Let Android apps open /dev/ntsync"
+	depends on NTSYNC=y && SECURITY_SELINUX
+	default y
+	help
+	  ueventd creates /dev/ntsync as root-only with the generic "device"
+	  SELinux label, which apps such as Wine front-ends cannot open.
+	  Once the node appears, relabel it gpu_device (a type apps are
+	  already allowed to open) and make it world read/write.  The
+	  driver keeps no privileged state: every open gets its own
+	  private set of objects.
+
 source "drivers/misc/c2port/Kconfig"
 source "drivers/misc/eeprom/Kconfig"
 source "drivers/misc/cb710/Kconfig"

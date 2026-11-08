@@ -78,6 +78,14 @@ on:
         description: "Boeffla wakelock blocker - CONFIG_BOEFFLA_WL_BLOCKER"
         type: boolean
         default: true
+      ntsync:
+        description: "NTSync for Wine, usable by apps - CONFIG_NTSYNC"
+        type: boolean
+        default: true
+      net_extras:
+        description: "ipset, TTL/HL targets, tc connmark, CIFS"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -181,6 +189,8 @@ jobs:
           IN_DRM_SDE_EXPO: ${{ inputs.dc_dimming }}
           IN_DRM_MSM_BACKLIGHT_MIN: ${{ inputs.backlight_min }}
           IN_BOEFFLA_WL_BLOCKER: ${{ inputs.boeffla }}
+          IN_NTSYNC: ${{ inputs.ntsync }}
+          IN_NET_EXTRAS: ${{ inputs.net_extras }}
         run: |
           # Switches go in with the defconfig merge: disabling them afterwards
           # would leave everything they select turned on.
@@ -188,9 +198,15 @@ jobs:
           tr -d '\r' < arch/arm64/configs/vendor/xiaomi/magictime-common.config > "$F"
           sed -i "s|^CONFIG_LOCALVERSION=.*|CONFIG_LOCALVERSION=\"-$KERNEL_NAME\"|" "$F"
           : > disabled.txt
+          if [ "$IN_NET_EXTRAS" != true ]; then
+            # Drop the whole block, up to the blank line that ends it
+            sed -i '/^# Networking extras/,/^$/d' "$F"
+            printf 'IP_SET\nIP_NF_TARGET_TTL\nNET_ACT_CONNMARK\nCIFS\n' >> disabled.txt
+          fi
           for opt in KSU KSU_SUSFS NOMOUNT BBG REKERNEL DROIDSPACES EFFCPU EFFGPU \
                      KCOMPRESSD LZ4_ARM64_NEON TCP_CONG_BBR ARM64_TUNE_SM8250 \
-                     K11A_PANEL_90HZ DRM_SDE_EXPO DRM_MSM_BACKLIGHT_MIN BOEFFLA_WL_BLOCKER; do
+                     K11A_PANEL_90HZ DRM_SDE_EXPO DRM_MSM_BACKLIGHT_MIN BOEFFLA_WL_BLOCKER \
+                     NTSYNC; do
             var="IN_$opt"
             [ "${!var}" = true ] && continue
             echo "$opt" >> disabled.txt

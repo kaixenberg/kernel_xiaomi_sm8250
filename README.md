@@ -31,6 +31,8 @@ all-on combination is tested.
 | SuSFS v2.3.0 with the priority UID filter | `CONFIG_KSU_SUSFS` |
 | [NoMount](https://github.com/maxsteeel/nomount) VFS path redirection | `CONFIG_NOMOUNT` |
 | [Baseband-guard](https://github.com/vc-teahouse/Baseband-guard): blocks writes to critical partitions | `CONFIG_BBG` |
+| Ptrace fix: `PTRACE_GETEVENTMSG` no longer leaks stale PIDs (such as zygote's) | — |
+| Unicode fix: invisible characters no longer alias names in casefolded folders | — |
 
 ### Performance and battery
 | Feature | Switch |
@@ -58,6 +60,8 @@ all-on combination is tested.
 | [Re:Kernel](https://github.com/Sakion-Team/Re-Kernel) freezer events | `CONFIG_REKERNEL` |
 | [Droidspaces](https://github.com/ravindu644/Droidspaces-OSS) container support | `CONFIG_DROIDSPACES` |
 | Boeffla wakelock blocker, empty list by default | `CONFIG_BOEFFLA_WL_BLOCKER` |
+| NTSync for Wine; `/dev/ntsync` can be opened by apps | `CONFIG_NTSYNC` |
+| Networking extras: ipset, TTL/HL targets, tc connmark, CIFS (SMB2/3) | CI switch `net_extras` |
 
 Inherited from MagicTime: KCAL, HBM, USB fast charge, WireGuard and more.
 

@@ -31,6 +31,9 @@ all-on combination is tested.
 | SuSFS v2.3.0 with the priority UID filter | `CONFIG_KSU_SUSFS` |
 | [NoMount](https://github.com/maxsteeel/nomount) VFS path redirection | `CONFIG_NOMOUNT` |
 | [Baseband-guard](https://github.com/vc-teahouse/Baseband-guard): blocks writes to critical partitions | `CONFIG_BBG` |
+| Ptrace fix: `PTRACE_GETEVENTMSG` no longer leaks stale PIDs (such as zygote's) | — |
+| Unicode fix: invisible characters no longer alias names in casefolded folders | — |
+| SELinux hide checks the stock and live policies in one pass, so timing gives nothing away (upstream KernelSU fix) | — |
 
 ### Performance and battery
 | Feature | Switch |
@@ -58,6 +61,8 @@ all-on combination is tested.
 | [Re:Kernel](https://github.com/Sakion-Team/Re-Kernel) freezer events | `CONFIG_REKERNEL` |
 | [Droidspaces](https://github.com/ravindu644/Droidspaces-OSS) container support | `CONFIG_DROIDSPACES` |
 | Boeffla wakelock blocker, empty list by default | `CONFIG_BOEFFLA_WL_BLOCKER` |
+| NTSync for Wine; `/dev/ntsync` can be opened by apps | `CONFIG_NTSYNC` |
+| Networking extras: ipset, TTL/HL targets, tc connmark, CIFS (SMB2/3) | CI switch `net_extras` |
 
 Inherited from MagicTime: KCAL, HBM, USB fast charge, WireGuard and more.
 
@@ -80,29 +85,35 @@ lists the kernel release and which features were turned off.
 ```bash
 git clone --recurse-submodules -b nidhi https://github.com/kaixenberg/kernel_xiaomi_sm8250
 cd kernel_xiaomi_sm8250
+CLANG_DIR=/path/to/clang ./build.sh
 ```
 
-With a recent Clang (Lilium Clang 22 is what releases use) in `PATH`:
+`build.sh` is what the workflow runs: it configures, builds and packages
+the flashable zip into `out/`. Use a recent Clang (releases use
+[Lilium Clang 22](https://github.com/liliumproject/clang/releases/tag/20250912)),
+either in `PATH` or through `CLANG_DIR`. It is set with environment
+variables:
 
-```bash
-make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 \
-    CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
-    alioth_defconfig vendor/xiaomi/magictime-common.config
-make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 \
-    CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- -j$(nproc)
-```
+| Variable | Default | What it does |
+|---|---|---|
+| `DEVICE` | `alioth` | `alioth`, `apollo` or `pipa` |
+| `KERNEL_NAME` | `NidhiKernel` | Name in `uname -r` after the version |
+| `DISABLE` | none | Switches to turn off, such as `"BBG NTSYNC"`. Use the switch names from the feature tables without `CONFIG_`, or `NET_EXTRAS` |
+| `VARIANT` | from the branch | `aosp` or `miui`, for the zip name |
+| `OUT` | `out` | Build directory |
+| `PODMAN_IMAGE` | none | Run the build inside this podman image |
 
-To turn a feature off, add `# CONFIG_X is not set` to a copy of the config
-fragment before the defconfig step. Disabling it afterwards would leave
-everything it selects turned on.
+`./build.sh --no-package` stops after the build, and
+`./build.sh -- <targets>` configures and then runs only those make targets.
+Switches are applied as part of the defconfig merge, so turning one off also
+turns off everything it would have selected.
 
 ## Packaging and flashing
 
-The installer is the `AnyKernel3` submodule
+`build.sh` packages the kernel with the `AnyKernel3` submodule
 ([NidhiKernel-AnyKernel3](https://github.com/kaixenberg/NidhiKernel-AnyKernel3)).
-Copy `out/arch/arm64/boot/Image` and `out/arch/arm64/boot/dtbo.img` into it
-and zip its contents. Flash the zip from recovery. It writes `boot` and
-`dtbo` on the active slot and leaves `vendor_boot` alone.
+Flash the zip from recovery. It writes `boot` and `dtbo` on the active slot
+and leaves `vendor_boot` alone.
 
 Keep your ROM's `boot`, `vendor_boot` and `dtbo` images: flashing them
 with fastboot restores the stock kernel.
@@ -114,6 +125,10 @@ with fastboot restores the stock kernel.
   the source of EFFCPU, the CASS changes, the NEON LZ4 decoder, kcompressd
   and the DC dimming driver.
 - The BakaSU, SuSFS, NoMount, Baseband-guard, Re:Kernel and Droidspaces
-  projects, and the authors of the BBRv3 backport.
+  projects, and the authors of the BBRv3 backport. BakaSU comes from the
+  [kaixenberg/BakaSU](https://github.com/kaixenberg/BakaSU) fork, which adds
+  upstream KernelSU fixes BakaSU does not have yet.
+- WildKernels' [kernel_patches](https://github.com/WildKernels/kernel_patches),
+  for the ptrace, Unicode, NTSync and networking ideas.
 - LowTension's [BAALAM](https://github.com/LowTension/BAALAM_android_kernel_xiaomi_sm8250) kernel, for the 90 Hz mode and the Boeffla and
   backlight-min ideas.

@@ -78,6 +78,14 @@ on:
         description: "Boeffla wakelock blocker - CONFIG_BOEFFLA_WL_BLOCKER"
         type: boolean
         default: true
+      ntsync:
+        description: "NTSync for Wine, usable by apps - CONFIG_NTSYNC"
+        type: boolean
+        default: true
+      net_extras:
+        description: "ipset, TTL/HL targets, tc connmark, CIFS"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -107,16 +115,6 @@ jobs:
         # BakaSU's version code is its commit count
         run: git -C KernelSU fetch --unshallow --tags || git -C KernelSU fetch --tags
 
-      - name: Validate inputs
-        run: |
-          if ! [[ "$KERNEL_NAME" =~ ^[A-Za-z0-9._+-]{1,32}$ ]]; then
-            echo "::error::kernel_name may only use letters, digits and . _ + - (max 32)"
-            exit 1
-          fi
-          if [ "$DEVICE" != alioth ]; then
-            echo "::warning::$DEVICE is not officially supported: the build may fail or not boot"
-          fi
-
       - name: Install build dependencies
         run: |
           sudo apt-get update -qq
@@ -136,24 +134,6 @@ jobs:
           mkdir -p "$RUNNER_TEMP/clang"
           curl -fsSL "$CLANG_URL" | tar -xz -C "$RUNNER_TEMP/clang"
 
-      - name: Set up the toolchain
-        run: |
-          echo "$RUNNER_TEMP/clang/bin" >> "$GITHUB_PATH"
-          "$RUNNER_TEMP/clang/bin/clang" --version | head -1
-          # Same make variables for the config and build passes, so Kconfig
-          # sees Clang and keeps ThinLTO and CFI
-          mkdir -p "$RUNNER_TEMP/bin"
-          cat > "$RUNNER_TEMP/bin/kmake" <<'SH'
-          #!/bin/sh
-          exec make O=out ARCH=arm64 \
-            CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
-            CC="ccache clang" HOSTCC=gcc HOSTCXX=g++ LD=ld.lld AS=llvm-as AR=llvm-ar \
-            NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
-            LLVM=1 LLVM_IAS=1 KBUILD_BUILD_USER=github KBUILD_BUILD_HOST=actions "$@"
-          SH
-          chmod +x "$RUNNER_TEMP/bin/kmake"
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-
       - name: Restore ccache
         uses: actions/cache@v4
         with:
@@ -163,7 +143,7 @@ jobs:
             ccache-${{ inputs.device }}-${{ github.ref_name }}-
             ccache-${{ inputs.device }}-
 
-      - name: Write the config fragment
+      - name: Pick the switches to turn off
         env:
           IN_KSU: ${{ inputs.ksu }}
           IN_KSU_SUSFS: ${{ inputs.ksu_susfs }}
@@ -181,89 +161,45 @@ jobs:
           IN_DRM_SDE_EXPO: ${{ inputs.dc_dimming }}
           IN_DRM_MSM_BACKLIGHT_MIN: ${{ inputs.backlight_min }}
           IN_BOEFFLA_WL_BLOCKER: ${{ inputs.boeffla }}
+          IN_NTSYNC: ${{ inputs.ntsync }}
+          IN_NET_EXTRAS: ${{ inputs.net_extras }}
         run: |
-          # Switches go in with the defconfig merge: disabling them afterwards
-          # would leave everything they select turned on.
-          F=arch/arm64/configs/ci-variant.config
-          tr -d '\r' < arch/arm64/configs/vendor/xiaomi/magictime-common.config > "$F"
-          sed -i "s|^CONFIG_LOCALVERSION=.*|CONFIG_LOCALVERSION=\"-$KERNEL_NAME\"|" "$F"
-          : > disabled.txt
-          for opt in KSU KSU_SUSFS NOMOUNT BBG REKERNEL DROIDSPACES EFFCPU EFFGPU \
-                     KCOMPRESSD LZ4_ARM64_NEON TCP_CONG_BBR ARM64_TUNE_SM8250 \
-                     K11A_PANEL_90HZ DRM_SDE_EXPO DRM_MSM_BACKLIGHT_MIN BOEFFLA_WL_BLOCKER; do
-            var="IN_$opt"
-            [ "${!var}" = true ] && continue
-            echo "$opt" >> disabled.txt
-            echo "# CONFIG_$opt is not set" >> "$F"
-            case $opt in
-              # KernelSU needs some hook: without SuSFS use the manual hooks
-              KSU_SUSFS) echo "CONFIG_KSU_MANUAL_HOOK=y" >> "$F" ;;
-              # The defconfig pass would otherwise keep baseband_guard in the LSM list
-              BBG) echo 'CONFIG_LSM="lockdown,yama,loadpin,safesetid,integrity,selinux,smack,tomoyo,apparmor,bpf"' >> "$F" ;;
-              TCP_CONG_BBR) printf '# CONFIG_DEFAULT_BBR is not set\nCONFIG_DEFAULT_CUBIC=y\n' >> "$F" ;;
-            esac
+          off=
+          for var in "${!IN_@}"; do
+            [ "${!var}" = true ] || off="$off ${var#IN_}"
           done
-          echo "Disabled: $(tr '\n' ' ' < disabled.txt)"
-
-      - name: Configure
-        run: |
-          kmake "${DEVICE}_defconfig" ci-variant.config
-          grep -E '^CONFIG_(CC_IS_CLANG|LTO_CLANG|THINLTO|CFI_CLANG)=' out/.config
-          bad=0
-          while read -r opt; do
-            if grep -q "^CONFIG_$opt=y" out/.config; then
-              echo "::error::CONFIG_$opt is still enabled"; bad=1
-            fi
-          done < disabled.txt
-          exit $bad
+          echo "DISABLE=${off# }" >> "$GITHUB_ENV"
+          echo "Disabled:${off:- none}"
 
       - name: Build
+        id: build
+        env:
+          CLANG_DIR: ${{ runner.temp }}/clang
+          KBUILD_BUILD_USER: github
+          KBUILD_BUILD_HOST: actions
         run: |
           ccache -z
-          kmake -j"$(nproc)"
+          ./build.sh 2>&1 | tee "$RUNNER_TEMP/build.log"
           ccache -s | head -5
 
-      - name: Package
-        id: package
+      - name: Summary
+        env:
+          ZIP_NAME: ${{ steps.build.outputs.zip_name }}
+          RELEASE: ${{ steps.build.outputs.release }}
+          VARIANT: ${{ steps.build.outputs.variant }}
         run: |
-          case "$GITHUB_REF_NAME" in *miui*) variant=miui ;; *) variant=aosp ;; esac
-          release=$(cat out/include/config/kernel.release)
-          zip_name="NidhiKernel-$variant-$DEVICE-$(date -u +%Y%m%d-%H%M)"
-          stage=$RUNNER_TEMP/ak3
-          cp -r AnyKernel3 "$stage"
-          rm -rf "$stage/.git" "$stage/README.md"
-          cp out/arch/arm64/boot/Image out/arch/arm64/boot/dtbo.img "$stage/"
-          case $DEVICE in
-            alioth) names="alioth aliothin" ;;
-            apollo) names="apollo apollon" ;;
-            pipa)
-              names="pipa"
-              # pipa takes its dtb from the kernel; AnyKernel3 repacks vendor_boot
-              find out/arch/arm64/boot/dts/vendor/qcom -name '*.dtb' -exec cat {} + > "$stage/dtb"
-              ;;
-          esac
-          sed -i '/^device\.name[0-9]=/d' "$stage/anykernel.sh"
-          n=1
-          for name in $names; do
-            sed -i "/^do\.cleanuponabort=/a device.name$n=$name" "$stage/anykernel.sh"
-            n=$((n + 1))
-          done
-          sed -i "s|^kernel.string=.*|kernel.string=NidhiKernel $release ($variant, $DEVICE)|" "$stage/anykernel.sh"
-          sh -n "$stage/anykernel.sh"
-          grep -E '^(kernel\.string|device\.name)' "$stage/anykernel.sh"
-          echo "zip_name=$zip_name" >> "$GITHUB_OUTPUT"
-          echo "stage=$stage" >> "$GITHUB_OUTPUT"
           {
-            echo "### $zip_name"
-            echo "- uname: \`$release\`"
-            echo "- Branch: \`$GITHUB_REF_NAME\` ($variant)"
-            echo "- Disabled: $(tr '\n' ' ' < disabled.txt | sed 's/ *$//;s/^$/none/')"
+            echo "### $ZIP_NAME"
+            echo "- uname: \`$RELEASE\`"
+            echo "- Branch: \`$GITHUB_REF_NAME\` ($VARIANT)"
+            echo "- BakaSU version code: $(grep -m1 -o 'version code: [0-9]*' "$RUNNER_TEMP/build.log" 2>/dev/null || echo unknown)"
+            echo "- Disabled: ${DISABLE:-none}"
             [ "$DEVICE" = alioth ] || echo "- **$DEVICE is not officially supported: this build may not boot.**"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the zip
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.package.outputs.zip_name }}
-          path: ${{ steps.package.outputs.stage }}/
+          name: ${{ steps.build.outputs.zip_name }}
+          path: ${{ steps.build.outputs.stage }}/
           if-no-files-found: error

@@ -80,6 +80,15 @@ Open **Actions → Build NidhiKernel → Run workflow**:
 The flashable zip is attached to the run as an artifact. The run summary
 lists the kernel release and which features were turned off.
 
+## Releases
+
+**Actions → Release NidhiKernel** builds alioth with every feature on from
+the tips of `nidhi` and/or `nidhi-miui` and publishes a release. It takes
+the version (such as `3.1`, which becomes the tag; MIUI builds also get
+`3.1-miui`) and what to build: Both, AOSP or MIUI. The notes are generated
+by `.github/release-notes.py`. They list the commits since the previous
+release, the BakaSU driver version and the flashing steps.
+
 ## Building locally
 
 ```bash

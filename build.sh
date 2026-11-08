@@ -164,6 +164,10 @@ make "${MAKE_ARGS[@]}" -j"$JOBS"
 
 # --- Package ---------------------------------------------------------------
 RELEASE=$(cat "$OUT/include/config/kernel.release")
+# BakaSU's version, as compiled in (its Kbuild derives it from git)
+KSU_CODE=$(grep -ohs -- '-DKSU_VERSION=[0-9]*' "$OUT"/drivers/kernelsu/.*.cmd "$OUT"/drivers/kernelsu/*/.*.cmd | head -1 | cut -d= -f2 || true)
+KSU_NAME=$(grep -ohs -- '-DKSU_VERSION_FULL=[^ ]*' "$OUT"/drivers/kernelsu/.*.cmd "$OUT"/drivers/kernelsu/*/.*.cmd | head -1 | cut -d= -f2 | tr -d '\\"' || true)
+CLANG_VERSION=$(clang --version | head -1)
 BOOT=$OUT/arch/arm64/boot
 ZIP_NAME=NidhiKernel-$VARIANT-$DEVICE-$(date -u +%Y%m%d-%H%M)
 STAGE=$OUT/ak3
@@ -197,7 +201,13 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
         echo "stage=$STAGE"
         echo "release=$RELEASE"
         echo "variant=$VARIANT"
+        echo "zip=$ZIP"
+        echo "ksu_code=$KSU_CODE"
+        echo "ksu_name=$KSU_NAME"
+        echo "clang=$CLANG_VERSION"
     } >> "$GITHUB_OUTPUT"
 fi
 echo "Kernel: $RELEASE ($VARIANT, $DEVICE)"
+[ -z "$KSU_CODE" ] || echo "BakaSU: $KSU_NAME (version code $KSU_CODE)"
+echo "Compiler: $CLANG_VERSION"
 echo "Zip: $ZIP"

@@ -15,12 +15,49 @@
 #include <linux/of.h>
 #include <linux/notifier.h>
 #include <linux/spinlock.h>
+#include <linux/cpumask.h>
 
-/* Defines used for the flags field in the struct generic_pm_domain */
-#define GENPD_FLAG_PM_CLK	 (1U << 0) /* PM domain uses PM clk */
-#define GENPD_FLAG_IRQ_SAFE	 (1U << 1) /* PM domain operates in atomic */
-#define GENPD_FLAG_ALWAYS_ON	 (1U << 2) /* PM domain is always powered on */
-#define GENPD_FLAG_ACTIVE_WAKEUP (1U << 3) /* Keep devices active if wakeup */
+/*
+ * Flags to control the behaviour of a genpd.
+ *
+ * These flags may be set in the struct generic_pm_domain's flags field by a
+ * genpd backend driver. The flags must be set before it calls pm_genpd_init(),
+ * which initializes a genpd.
+ *
+ * GENPD_FLAG_PM_CLK:		Instructs genpd to use the PM clk framework,
+ *				while powering on/off attached devices.
+ *
+ * GENPD_FLAG_IRQ_SAFE:		This informs genpd that its backend callbacks,
+ *				->power_on|off(), doesn't sleep. Hence, these
+ *				can be invoked from within atomic context, which
+ *				enables genpd to power on/off the PM domain,
+ *				even when pm_runtime_is_irq_safe() returns true,
+ *				for any of its attached devices. Note that, a
+ *				genpd having this flag set, requires its
+ *				masterdomains to also have it set.
+ *
+ * GENPD_FLAG_ALWAYS_ON:	Instructs genpd to always keep the PM domain
+ *				powered on.
+ *
+ * GENPD_FLAG_ACTIVE_WAKEUP:	Instructs genpd to keep the PM domain powered
+ *				on, in case any of its attached devices is used
+ *				in the wakeup path to serve system wakeups.
+ *
+ * GENPD_FLAG_CPU_DOMAIN:	Instructs genpd that it should expect to get
+ *				devices attached, which may belong to CPUs or
+ *				possibly have subdomains with CPUs attached.
+ *				This flag enables the genpd backend driver to
+ *				deploy idle power management support for CPUs
+ *				and groups of CPUs. Note that, the backend
+ *				driver must then comply with the so called,
+ *				last-man-standing algorithm, for the CPUs in the
+ *				PM domain.
+ */
+#define GENPD_FLAG_PM_CLK	 (1U << 0)
+#define GENPD_FLAG_IRQ_SAFE	 (1U << 1)
+#define GENPD_FLAG_ALWAYS_ON	 (1U << 2)
+#define GENPD_FLAG_ACTIVE_WAKEUP (1U << 3)
+#define GENPD_FLAG_CPU_DOMAIN	 (1U << 4)
 
 enum gpd_status {
 	GPD_STATE_ACTIVE = 0,	/* PM domain is active */
@@ -43,10 +80,12 @@ struct genpd_power_state {
 	s64 residency_ns;
 	struct fwnode_handle *fwnode;
 	ktime_t idle_time;
+	void *data;
 };
 
 struct genpd_lock_ops;
 struct dev_pm_opp;
+struct opp_table;
 
 struct generic_pm_domain {
 	struct device dev;
@@ -66,8 +105,10 @@ struct generic_pm_domain {
 	unsigned int suspended_count;	/* System suspend device counter */
 	unsigned int prepared_count;	/* Suspend counter of prepared devices */
 	unsigned int performance_state;	/* Aggregated max performance state */
+	cpumask_var_t cpus;		/* A cpumask of the attached CPUs */
 	int (*power_off)(struct generic_pm_domain *domain);
 	int (*power_on)(struct generic_pm_domain *domain);
+	struct opp_table *opp_table;	/* OPP table of the genpd */
 	unsigned int (*opp_to_performance_state)(struct generic_pm_domain *genpd,
 						 struct dev_pm_opp *opp);
 	int (*set_performance_state)(struct generic_pm_domain *genpd,
@@ -82,9 +123,10 @@ struct generic_pm_domain {
 			   struct device *dev);
 	unsigned int flags;		/* Bit field of configs for genpd */
 	struct genpd_power_state *states;
+	void (*free_states)(struct genpd_power_state *states,
+			    unsigned int state_count);
 	unsigned int state_count; /* number of states */
 	unsigned int state_idx; /* state that genpd will go to when off */
-	void *free; /* Free the state that was allocated for default */
 	ktime_t on_time;
 	ktime_t accounting_time;
 	const struct genpd_lock_ops *lock_ops;
@@ -108,6 +150,10 @@ struct gpd_link {
 	struct list_head master_node;
 	struct generic_pm_domain *slave;
 	struct list_head slave_node;
+
+	/* Sub-domain's per-master domain performance state */
+	unsigned int performance_state;
+	unsigned int prev_performance_state;
 };
 
 struct gpd_timing_data {
@@ -232,14 +278,14 @@ int of_genpd_add_subdomain(struct of_phandle_args *parent,
 struct generic_pm_domain *of_genpd_remove_last(struct device_node *np);
 int of_genpd_parse_idle_states(struct device_node *dn,
 			       struct genpd_power_state **states, int *n);
-unsigned int of_genpd_opp_to_performance_state(struct device *dev,
-				struct device_node *np);
+unsigned int pm_genpd_opp_to_performance_state(struct device *genpd_dev,
+					       struct dev_pm_opp *opp);
 
 int genpd_dev_pm_attach(struct device *dev);
 struct device *genpd_dev_pm_attach_by_id(struct device *dev,
 					 unsigned int index);
 struct device *genpd_dev_pm_attach_by_name(struct device *dev,
-					   char *name);
+					   const char *name);
 #else /* !CONFIG_PM_GENERIC_DOMAINS_OF */
 static inline int of_genpd_add_provider_simple(struct device_node *np,
 					struct generic_pm_domain *genpd)
@@ -274,8 +320,8 @@ static inline int of_genpd_parse_idle_states(struct device_node *dn,
 }
 
 static inline unsigned int
-of_genpd_opp_to_performance_state(struct device *dev,
-				  struct device_node *np)
+pm_genpd_opp_to_performance_state(struct device *genpd_dev,
+				  struct dev_pm_opp *opp)
 {
 	return 0;
 }
@@ -292,7 +338,7 @@ static inline struct device *genpd_dev_pm_attach_by_id(struct device *dev,
 }
 
 static inline struct device *genpd_dev_pm_attach_by_name(struct device *dev,
-							 char *name)
+							 const char *name)
 {
 	return NULL;
 }
@@ -309,7 +355,7 @@ int dev_pm_domain_attach(struct device *dev, bool power_on);
 struct device *dev_pm_domain_attach_by_id(struct device *dev,
 					  unsigned int index);
 struct device *dev_pm_domain_attach_by_name(struct device *dev,
-					    char *name);
+					    const char *name);
 void dev_pm_domain_detach(struct device *dev, bool power_off);
 void dev_pm_domain_set(struct device *dev, struct dev_pm_domain *pd);
 #else
@@ -323,7 +369,7 @@ static inline struct device *dev_pm_domain_attach_by_id(struct device *dev,
 	return NULL;
 }
 static inline struct device *dev_pm_domain_attach_by_name(struct device *dev,
-							  char *name)
+							  const char *name)
 {
 	return NULL;
 }

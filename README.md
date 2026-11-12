@@ -27,13 +27,13 @@ all-on combination is tested.
 ### Root and hiding
 | Feature | Switch |
 |---|---|
-| [BakaSU](https://github.com/Baka-SU/BakaSU) (KernelSU) | `CONFIG_KSU` |
-| SuSFS v2.3.0 with the priority UID filter | `CONFIG_KSU_SUSFS` |
+| [backslashxx KernelSU](https://github.com/backslashxx/KernelSU), hooked through arm64 branch-link patching | `CONFIG_KSU` |
+| SuSFS v2.3.0 with the priority UID filter, wired into the kernel and KernelSU by NidhiKernel | `CONFIG_KSU_SUSFS` |
 | [NoMount](https://github.com/maxsteeel/nomount) VFS path redirection | `CONFIG_NOMOUNT` |
 | [Baseband-guard](https://github.com/vc-teahouse/Baseband-guard): blocks writes to critical partitions | `CONFIG_BBG` |
 | Ptrace fix: `PTRACE_GETEVENTMSG` no longer leaks stale PIDs (such as zygote's) | — |
 | Unicode fix: invisible characters no longer alias names in casefolded folders | — |
-| SELinux hide checks the stock and live policies in one pass, so timing gives nothing away (upstream KernelSU fix) | — |
+| SELinux hide: apps can't see KernelSU's SELinux types or the `adbroot` domain | — |
 
 ### Performance and battery
 | Feature | Switch |
@@ -66,6 +66,18 @@ all-on combination is tested.
 
 Inherited from MagicTime: KCAL, HBM, USB fast charge, WireGuard and more.
 
+## KernelSU manager
+
+Use the manager from [backslashxx/KernelSU](https://github.com/backslashxx/KernelSU/releases),
+or [KOWSU](https://github.com/KOWX712/KernelSU) (`com.kowx712.supermanager`),
+which this KernelSU also accepts. Some ROMs hide the official manager's
+package (`me.weishu.kernelsu`) from other apps, which breaks its WebUI and
+installing modules from a file manager; KOWSU isn't affected.
+
+The driver and manager version codes don't match, and that's expected.
+The driver's code (such as 32725) only changes when backslashxx changes the
+kernel side, while the manager's goes up with every upstream commit.
+
 ## Building with GitHub Actions
 
 Open **Actions → Build NidhiKernel → Run workflow**:
@@ -87,7 +99,7 @@ the tips of `nidhi` and/or `nidhi-miui` and publishes a release. It takes
 the version (such as `3.1`, which becomes the tag; MIUI builds also get
 `3.1-miui`) and what to build: Both, AOSP or MIUI. The notes are generated
 by `.github/release-notes.py`. They list the commits since the previous
-release, the BakaSU driver version and the flashing steps.
+release, the KernelSU driver version and the flashing steps.
 
 ## Building locally
 
@@ -133,10 +145,11 @@ with fastboot restores the stock kernel.
 - kvsnr113 and contributors for [e404](https://github.com/kvsnr113/xiaomi_sm8250_kernel_e404),
   the source of EFFCPU, the CASS changes, the NEON LZ4 decoder, kcompressd
   and the DC dimming driver.
-- The BakaSU, SuSFS, NoMount, Baseband-guard, Re:Kernel and Droidspaces
-  projects, and the authors of the BBRv3 backport. BakaSU comes from the
-  [kaixenberg/BakaSU](https://github.com/kaixenberg/BakaSU) fork, which adds
-  upstream KernelSU fixes BakaSU does not have yet.
+- backslashxx for KernelSU, and the SuSFS, NoMount, Baseband-guard,
+  Re:Kernel and Droidspaces projects, and the authors of the BBRv3 backport.
+  KernelSU comes from the [kaixenberg/KernelSU](https://github.com/kaixenberg/KernelSU)
+  fork (branch `nidhi`), which adds the SuSFS integration and hides the
+  `adbroot` domain.
 - WildKernels' [kernel_patches](https://github.com/WildKernels/kernel_patches),
   for the ptrace, Unicode, NTSync and networking ideas.
 - LowTension's [BAALAM](https://github.com/LowTension/BAALAM_android_kernel_xiaomi_sm8250) kernel, for the 90 Hz mode and the Boeffla and

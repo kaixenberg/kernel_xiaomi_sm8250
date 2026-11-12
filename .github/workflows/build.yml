@@ -15,7 +15,7 @@ on:
         type: string
         default: NidhiKernel
       ksu:
-        description: "KernelSU (BakaSU) - CONFIG_KSU"
+        description: "KernelSU (backslashxx) - CONFIG_KSU"
         type: boolean
         default: true
       ksu_susfs:
@@ -156,7 +156,7 @@ jobs:
             echo "### $ZIP_NAME"
             echo "- uname: \`$RELEASE\`"
             echo "- Branch: \`$GITHUB_REF_NAME\` ($VARIANT)"
-            [ -z "$KSU_CODE" ] || echo "- BakaSU: $KSU_NAME, version code **$KSU_CODE** (manager CI builds: https://t.me/BakaSU_Grp)"
+            [ -z "$KSU_CODE" ] || echo "- KernelSU: $KSU_NAME, version code **$KSU_CODE** (manager: backslashxx/KernelSU or KOWX712/KernelSU)"
             echo "- Disabled: ${DISABLE:-none}"
             [ "$DEVICE" = alioth ] || echo "- **$DEVICE is not officially supported: this build may not boot.**"
           } >> "$GITHUB_STEP_SUMMARY"

@@ -132,8 +132,6 @@ for opt in ${DISABLE:-}; do
     echo "# CONFIG_$opt is not set" >> "$FRAGMENT"
     CHECK+=("$opt")
     case $opt in
-        # KernelSU needs some hook: without SuSFS use the manual hooks
-        KSU_SUSFS) echo "CONFIG_KSU_MANUAL_HOOK=y" >> "$FRAGMENT" ;;
         # The defconfig pass would otherwise keep baseband_guard in the LSM list
         BBG) echo 'CONFIG_LSM="lockdown,yama,loadpin,safesetid,integrity,selinux,smack,tomoyo,apparmor,bpf"' >> "$FRAGMENT" ;;
         TCP_CONG_BBR) printf '# CONFIG_DEFAULT_BBR is not set\nCONFIG_DEFAULT_CUBIC=y\n' >> "$FRAGMENT" ;;
@@ -164,9 +162,9 @@ make "${MAKE_ARGS[@]}" -j"$JOBS"
 
 # --- Package ---------------------------------------------------------------
 RELEASE=$(cat "$OUT/include/config/kernel.release")
-# BakaSU's version, as compiled in (its Kbuild derives it from git)
+# KernelSU's version, as compiled in (backslashxx sets it in its Makefile)
 KSU_CODE=$(grep -ohs -- '-DKSU_VERSION=[0-9]*' "$OUT"/drivers/kernelsu/.*.cmd "$OUT"/drivers/kernelsu/*/.*.cmd | head -1 | cut -d= -f2 || true)
-KSU_NAME=$(grep -ohs -- '-DKSU_VERSION_FULL=[^ ]*' "$OUT"/drivers/kernelsu/.*.cmd "$OUT"/drivers/kernelsu/*/.*.cmd | head -1 | cut -d= -f2 | tr -d '\\"' || true)
+KSU_NAME="backslashxx KernelSU $(git -C KernelSU describe --tags --always --dirty 2>/dev/null || echo unknown)"
 CLANG_VERSION=$(clang --version | head -1)
 BOOT=$OUT/arch/arm64/boot
 ZIP_NAME=NidhiKernel-$VARIANT-$DEVICE-$(date -u +%Y%m%d-%H%M)
@@ -208,6 +206,6 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
     } >> "$GITHUB_OUTPUT"
 fi
 echo "Kernel: $RELEASE ($VARIANT, $DEVICE)"
-[ -z "$KSU_CODE" ] || echo "BakaSU: $KSU_NAME (version code $KSU_CODE)"
+[ -z "$KSU_CODE" ] || echo "KernelSU: $KSU_NAME (version code $KSU_CODE)"
 echo "Compiler: $CLANG_VERSION"
 echo "Zip: $ZIP"

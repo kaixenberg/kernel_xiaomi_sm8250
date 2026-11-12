@@ -1,6 +1,6 @@
 name: Set up the NidhiKernel build
 description: >
-  Fetch BakaSU's history (its version code is its commit count), install the
+  Fetch KernelSU's history and tags (for the describe-based name), install the
   build dependencies, and restore Lilium Clang and ccache. Exports CLANG_DIR
   and the ccache settings for build.sh.
 inputs:

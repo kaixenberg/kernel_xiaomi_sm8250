@@ -13,7 +13,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-BAKASU_GROUP = "https://t.me/BakaSU_Grp"
+KSU_UPSTREAM = "https://github.com/backslashxx/KernelSU"
+KOWSU = "https://github.com/KOWX712/KernelSU"
 VARIANTS = {
     "aosp": ("AOSP-based ROMs", "nidhi", ""),
     "miui": ("MIUI / HyperOS", "nidhi-miui", "-miui"),
@@ -95,7 +96,7 @@ def main():
           f"[`{builds[v]['sha'][:12]}`](https://github.com/{repo}/commit/{builds[v]['sha']})")
     ksu_repo = first["ksu_url"].removesuffix(".git").removeprefix("https://github.com/")
     if first.get("ksu_code"):
-        w(f"- **BakaSU driver:** {first['ksu_name']}, version code **{first['ksu_code']}** "
+        w(f"- **KernelSU driver:** {first['ksu_name']}, version code **{first['ksu_code']}** "
           f"([`{first['ksu_sha'][:8]}`](https://github.com/{ksu_repo}/commit/{first['ksu_sha']}) "
           f"in [{ksu_repo}](https://github.com/{ksu_repo}))")
     w(f"- **SuSFS:** {first['susfs']}")
@@ -103,12 +104,15 @@ def main():
     w("")
 
     if first.get("ksu_code"):
-        w("## BakaSU manager")
+        w("## KernelSU manager")
         w("")
-        w(f"Use a BakaSU manager built for this kernel's driver, version code "
-          f"**{first['ksu_code']}**. CI builds of the manager are posted in the "
-          f"[BakaSU Telegram group]({BAKASU_GROUP}): download the one whose "
-          f"version code is closest to {first['ksu_code']}.")
+        w(f"The driver is [backslashxx KernelSU]({KSU_UPSTREAM}) with SuSFS, "
+          f"version code **{first['ksu_code']}**. Use its manager from the "
+          f"[releases]({KSU_UPSTREAM}/releases) or CI, or the "
+          f"[KOWSU manager]({KOWSU}) (`com.kowx712.supermanager`), which the "
+          f"driver also accepts. Some ROMs hide `me.weishu.kernelsu` from "
+          f"other apps, which breaks the official manager's WebUI; KOWSU is "
+          f"not affected.")
         w("")
 
     w("## Flashing")

@@ -1,6 +1,6 @@
 [submodule "KernelSU"]
 	path = KernelSU
-	url = https://github.com/kaixenberg/BakaSU
+	url = https://github.com/kaixenberg/KernelSU.git
 	branch = nidhi
 [submodule "Baseband-guard"]
 	path = Baseband-guard

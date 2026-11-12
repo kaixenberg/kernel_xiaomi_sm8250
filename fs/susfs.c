@@ -28,6 +28,7 @@
 #include <linux/string.h>
 #include <linux/vmalloc.h>
 #include <linux/hash.h>
+#include <linux/init.h>
 #include <linux/susfs.h>
 #include "fuse/fuse_i.h"
 #include "mount.h"
@@ -2207,6 +2208,88 @@ void susfs_init(void) {\
 	SUSFS_LOGI("Initializing susfs_extra_works\n");
 	INIT_WORK(&susfs_extra_works, susfs_run_extra_works);
 	SUSFS_LOGI("susfs is initialized! version: " SUSFS_VERSION " \n");
+}
+
+/*
+ * NidhiKernel: KernelSU no longer calls susfs_init() or routes the susfs
+ * commands, so both live here. susfs_handle_cmd() is called from
+ * sys_reboot for root callers only (see kernel/reboot.c).
+ */
+static int __init susfs_initcall(void)
+{
+	susfs_init();
+	return 0;
+}
+fs_initcall(susfs_initcall);
+
+void susfs_handle_cmd(unsigned int cmd, void __user **arg)
+{
+	switch (cmd) {
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+	case CMD_SUSFS_ADD_SUS_PATH:
+		susfs_add_sus_path(arg);
+		return;
+	case CMD_SUSFS_ADD_SUS_PATH_LOOP:
+		susfs_add_sus_path_loop(arg);
+		return;
+#endif
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+	case CMD_SUSFS_HIDE_SUS_MNTS_FOR_NON_SU_PROCS:
+		susfs_set_hide_sus_mnts_for_non_su_procs(arg);
+		return;
+#endif
+#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+	case CMD_SUSFS_ADD_SUS_KSTAT:
+	case CMD_SUSFS_ADD_SUS_KSTAT_STATICALLY:
+		susfs_add_sus_kstat(arg);
+		return;
+	case CMD_SUSFS_UPDATE_SUS_KSTAT:
+		susfs_update_sus_kstat(arg);
+		return;
+#endif
+#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
+	case CMD_SUSFS_SET_UNAME:
+		susfs_set_uname(arg);
+		return;
+#endif
+#ifdef CONFIG_KSU_SUSFS_ENABLE_LOG
+	case CMD_SUSFS_ENABLE_LOG:
+		susfs_enable_log(arg);
+		return;
+#endif
+#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+	case CMD_SUSFS_SET_CMDLINE_OR_BOOTCONFIG:
+		susfs_set_cmdline_or_bootconfig(arg);
+		return;
+#endif
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+	case CMD_SUSFS_ADD_OPEN_REDIRECT:
+		susfs_add_open_redirect(arg);
+		return;
+#endif
+#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+	case CMD_SUSFS_ADD_SUS_MAP:
+		susfs_add_sus_map(arg);
+		return;
+#endif
+#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
+	case CMD_SUSFS_SET_PRIORITY_UID_FILTER:
+		susfs_set_priority_uid_filter(arg);
+		return;
+#endif
+	case CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING:
+		susfs_set_avc_log_spoofing(arg);
+		return;
+	case CMD_SUSFS_SHOW_ENABLED_FEATURES:
+		susfs_get_enabled_features(arg);
+		return;
+	case CMD_SUSFS_SHOW_VARIANT:
+		susfs_show_variant(arg);
+		return;
+	case CMD_SUSFS_SHOW_VERSION:
+		susfs_show_version(arg);
+		return;
+	}
 }
 
 /* No module exit is needed becuase it should never be a loadable kernel module */

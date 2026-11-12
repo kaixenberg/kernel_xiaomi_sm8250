@@ -305,12 +305,10 @@ DEFINE_MUTEX(system_transition_mutex);
  *
  * reboot doesn't sync: do that yourself before calling this.
  */
-#if defined(CONFIG_KSU_SUSFS) || defined(CONFIG_KSU_MANUAL_HOOK)
-extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);
-#endif
-#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
+#ifdef CONFIG_KSU_SUSFS
 #include <linux/susfs.h>
 #include <linux/susfs_def.h>
+/* KernelSU's KSU_INSTALL_MAGIC1, which ksu_susfs passes as magic1 */
 #define SUSFS_REBOOT_MAGIC1 0xDEADBEEF
 #endif
 
@@ -320,16 +318,20 @@ SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,
 	struct pid_namespace *pid_ns = task_active_pid_ns(current);
 	char buffer[256];
 	int ret = 0;
-#if defined(CONFIG_KSU_SUSFS) || defined(CONFIG_KSU_MANUAL_HOOK)
-	if (system_state == SYSTEM_RUNNING)
-		ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
-#endif
-#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
-	/* BakaSU's ksu_handle_susfs_cmd() does not route this one yet */
-	if (system_state == SYSTEM_RUNNING && (u32)magic1 == SUSFS_REBOOT_MAGIC1 &&
-	    (u32)magic2 == SUSFS_MAGIC && cmd == CMD_SUSFS_SET_PRIORITY_UID_FILTER &&
-	    uid_eq(current_uid(), GLOBAL_ROOT_UID))
-		susfs_set_priority_uid_filter(&arg);
+#ifdef CONFIG_KSU_SUSFS
+	/*
+	 * SuSFS commands are routed here rather than through KernelSU, so
+	 * they do not depend on which KernelSU flavour or hook method is
+	 * built in. KernelSU's own sys_reboot hook only looks at its own
+	 * magic2 values and always falls through to this syscall. The
+	 * result goes back through arg, and the syscall still fails below
+	 * like any bad magic, so callers see stock return values.
+	 */
+	if (unlikely((u32)magic1 == SUSFS_REBOOT_MAGIC1 &&
+		     (u32)magic2 == SUSFS_MAGIC &&
+		     system_state == SYSTEM_RUNNING &&
+		     uid_eq(current_uid(), GLOBAL_ROOT_UID)))
+		susfs_handle_cmd(cmd, &arg);
 #endif
 
 

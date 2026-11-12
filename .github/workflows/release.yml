@@ -2,15 +2,11 @@ name: Release NidhiKernel
 
 # Builds the alioth kernel with every feature on, from the tips of nidhi
 # (AOSP) and/or nidhi-miui (MIUI), tags them and publishes a release.
-# Tags follow the existing style: <version> on nidhi, <version>-miui on
-# nidhi-miui.
+# The version is the short commit id of the nidhi tip (of nidhi-miui for a
+# MIUI-only release). Tags: <version> on nidhi, <version>-miui on nidhi-miui.
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: "Version, e.g. 3.1 (becomes the tag; no leading v)"
-        type: string
-        required: true
       variant:
         description: "What to build"
         type: choice
@@ -34,20 +30,21 @@ jobs:
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       tag: ${{ steps.plan.outputs.tag }}
+      version: ${{ steps.plan.outputs.version }}
     steps:
-      - name: Check the version and plan the builds
+      - name: Pick the version and plan the builds
         id: plan
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ inputs.version }}
           VARIANT: ${{ inputs.variant }}
         run: |
-          if ! [[ "$VERSION" =~ ^[0-9]+(\.[0-9]+)*$ ]]; then
-            echo "::error::version must look like 3.1 (digits and dots, no v)"
-            exit 1
-          fi
-          aosp='{"variant":"aosp","branch":"nidhi"}'
-          miui='{"variant":"miui","branch":"nidhi-miui"}'
+          # Pin each branch tip now, so every job builds and tags the same commit
+          aosp_sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/nidhi" -q .sha)
+          miui_sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/nidhi-miui" -q .sha)
+          if [ "$VARIANT" = MIUI ]; then VERSION=${miui_sha:0:7}; else VERSION=${aosp_sha:0:7}; fi
+          echo "Version: $VERSION (nidhi $aosp_sha, nidhi-miui $miui_sha)"
+          aosp="{\"variant\":\"aosp\",\"branch\":\"nidhi\",\"sha\":\"$aosp_sha\"}"
+          miui="{\"variant\":\"miui\",\"branch\":\"nidhi-miui\",\"sha\":\"$miui_sha\"}"
           case $VARIANT in
             Both) matrix="[$aosp,$miui]"; tags="$VERSION $VERSION-miui"; tag=$VERSION ;;
             AOSP) matrix="[$aosp]"; tags="$VERSION"; tag=$VERSION ;;
@@ -61,6 +58,7 @@ jobs:
           done
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
   build:
     needs: prepare
@@ -78,7 +76,7 @@ jobs:
       - name: Check out ${{ matrix.branch }}
         uses: actions/checkout@v4
         with:
-          ref: ${{ matrix.branch }}
+          ref: ${{ matrix.sha }}
           submodules: recursive
           fetch-depth: 1
 
@@ -93,7 +91,7 @@ jobs:
 
       - name: Collect the release files
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ needs.prepare.outputs.version }}
           ZIP: ${{ steps.build.outputs.zip }}
           RELEASE: ${{ steps.build.outputs.release }}
           KSU_CODE: ${{ steps.build.outputs.ksu_code }}
@@ -152,13 +150,13 @@ jobs:
       - name: Write the release notes
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: python3 .github/release-notes.py dist > notes.md && cat notes.md
 
       - name: Tag and publish
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ needs.prepare.outputs.version }}
           TAG: ${{ needs.prepare.outputs.tag }}
           PRERELEASE: ${{ inputs.prerelease }}
         run: |

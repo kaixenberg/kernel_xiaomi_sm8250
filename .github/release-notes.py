@@ -8,7 +8,6 @@ the environment and an authenticated gh for the GitHub API.
 """
 import json
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -35,26 +34,59 @@ def gh_api(path):
     return items
 
 
-def vkey(v):
-    return tuple(int(x) for x in v.split("."))
+def previous_tag(releases, tags, version, suffix):
+    """Tag of the newest earlier release that has a <x><suffix> tag, or None.
+
+    Releases are named after either version numbers (3.1) or short commit
+    ids, so they are ordered by date rather than by name.
+    """
+    for rel in releases:  # newest first
+        if rel.get("draft"):
+            continue
+        base = rel["tag_name"].removesuffix("-miui")
+        if base == version:
+            continue
+        if base + suffix in tags:
+            return base + suffix
+    return None
 
 
-def previous_tag(tags, version, suffix):
-    """Highest <x.y><suffix> tag below version, or None."""
-    pat = re.compile(r"^(\d+(?:\.\d+)*)" + re.escape(suffix) + "$")
-    older = [m.group(1) for t in tags if (m := pat.match(t))]
-    older = [v for v in older if vkey(v) < vkey(version)]
-    return max(older, key=vkey) + suffix if older else None
+def commit(repo, sha):
+    return gh_api(f"repos/{repo}/commits/{sha}")[0]
 
 
-def commits_between(repo, base, head):
-    """Non-merge commits in base..head, newest first."""
+def commits_between(repo, base, head, limit=400):
+    """Our commits from head back to the base tag, newest first.
+
+    Walks the first-parent chain, as a GitHub compare would also list every
+    upstream commit after MagicTime rewrites its history. Upstream merges
+    ("Merge upstream ...") and nidhi -> nidhi-miui merges are one line or
+    skipped; other merges (feature branches) are expanded into their own
+    commits.
+    """
     if not base:
         return [], None
-    pages = gh_api(f"repos/{repo}/compare/{base}...{head}?per_page=100")
-    commits = [c for page in pages for c in page.get("commits", [])]
-    commits = [c for c in commits if len(c["parents"]) == 1]
-    return commits[::-1], f"https://github.com/{repo}/compare/{base}...{head[:12]}"
+    stop = commit(repo, base)["sha"]
+    out, sha = [], head
+    for _ in range(limit):
+        if sha == stop:
+            break
+        c = commit(repo, sha)
+        subject = c["commit"]["message"].splitlines()[0]
+        parents = [x["sha"] for x in c["parents"]]
+        if len(parents) == 1:
+            out.append(c)
+        elif subject.startswith("Merge upstream"):
+            out.append(c)
+        elif not subject.startswith("Merge branch 'nidhi' into"):
+            pages = gh_api(f"repos/{repo}/compare/{parents[0]}...{parents[1]}?per_page=100")
+            side = [x for page in pages for x in page.get("commits", [])
+                    if len(x["parents"]) == 1]
+            out.extend(side[::-1])
+        if not parents:
+            break
+        sha = parents[0]
+    return out, f"https://github.com/{repo}/compare/{base}...{head[:12]}"
 
 
 def main():
@@ -67,7 +99,9 @@ def main():
         b["sha256"] = (dist / (b["zip"] + ".sha256")).read_text().split()[0]
         builds[b["variant"]] = b
     order = [v for v in ("aosp", "miui") if v in builds]
-    tags = [t["name"] for page in gh_api(f"repos/{repo}/tags?per_page=100") for t in page]
+    tags = {t["name"] for page in gh_api(f"repos/{repo}/tags?per_page=100") for t in page}
+    releases = [r for page in gh_api(f"repos/{repo}/releases?per_page=100") for r in page]
+    releases.sort(key=lambda r: r["created_at"], reverse=True)
     first = builds[order[0]]
 
     out = []
@@ -151,7 +185,7 @@ def main():
     for v in order:
         b = builds[v]
         suffix = VARIANTS[v][2]
-        prev = previous_tag(tags, version, suffix)
+        prev = previous_tag(releases, tags, version, suffix)
         commits, compare = commits_between(repo, prev, b["sha"])
         commits = [c for c in commits if c["sha"] not in seen]
         if v == "miui" and "aosp" in builds:

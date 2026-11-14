@@ -28,7 +28,7 @@ all-on combination is tested.
 | Feature | Switch |
 |---|---|
 | [backslashxx KernelSU](https://github.com/backslashxx/KernelSU), hooked through arm64 branch-link patching | `CONFIG_KSU` |
-| SuSFS v2.3.0 with the priority UID filter, wired into the kernel and KernelSU by NidhiKernel | `CONFIG_KSU_SUSFS` |
+| SuSFS v2.4.0 with the priority UID filter, wired into the kernel and KernelSU by NidhiKernel | `CONFIG_KSU_SUSFS` |
 | [NoMount](https://github.com/maxsteeel/nomount) VFS path redirection | `CONFIG_NOMOUNT` |
 | [Baseband-guard](https://github.com/vc-teahouse/Baseband-guard): blocks writes to critical partitions | `CONFIG_BBG` |
 | Ptrace fix: `PTRACE_GETEVENTMSG` no longer leaks stale PIDs (such as zygote's) | — |

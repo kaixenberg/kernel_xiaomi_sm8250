@@ -159,6 +159,7 @@ static struct shash_alg alg = {
 	.descsize		=	sizeof(struct michael_mic_desc_ctx),
 	.base			=	{
 		.cra_name		=	"michael_mic",
+		.cra_driver_name	=	"michael_mic-generic",
 		.cra_blocksize		=	8,
 		.cra_alignmask		=	3,
 		.cra_ctxsize		=	sizeof(struct michael_mic_ctx),
@@ -178,7 +179,7 @@ static void __exit michael_mic_exit(void)
 }
 
 
-module_init(michael_mic_init);
+subsys_initcall(michael_mic_init);
 module_exit(michael_mic_exit);
 
 MODULE_LICENSE("GPL v2");

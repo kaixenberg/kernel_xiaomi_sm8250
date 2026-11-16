@@ -647,6 +647,7 @@ static struct crypto_alg srp_algs[2] = { {
 	.cia_decrypt		=	serpent_decrypt } }
 }, {
 	.cra_name		=	"tnepres",
+	.cra_driver_name	=	"tnepres-generic",
 	.cra_flags		=	CRYPTO_ALG_TYPE_CIPHER,
 	.cra_blocksize		=	SERPENT_BLOCK_SIZE,
 	.cra_ctxsize		=	sizeof(struct serpent_ctx),
@@ -670,7 +671,7 @@ static void __exit serpent_mod_fini(void)
 	crypto_unregister_algs(srp_algs, ARRAY_SIZE(srp_algs));
 }
 
-module_init(serpent_mod_init);
+subsys_initcall(serpent_mod_init);
 module_exit(serpent_mod_fini);
 
 MODULE_LICENSE("GPL");

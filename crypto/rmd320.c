@@ -371,6 +371,7 @@ static struct shash_alg alg = {
 	.descsize	=	sizeof(struct rmd320_ctx),
 	.base		=	{
 		.cra_name	 =	"rmd320",
+		.cra_driver_name =	"rmd320-generic",
 		.cra_blocksize	 =	RMD320_BLOCK_SIZE,
 		.cra_module	 =	THIS_MODULE,
 	}
@@ -386,7 +387,7 @@ static void __exit rmd320_mod_fini(void)
 	crypto_unregister_shash(&alg);
 }
 
-module_init(rmd320_mod_init);
+subsys_initcall(rmd320_mod_init);
 module_exit(rmd320_mod_fini);
 
 MODULE_LICENSE("GPL");

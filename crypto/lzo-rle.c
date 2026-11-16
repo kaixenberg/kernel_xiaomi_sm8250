@@ -122,6 +122,7 @@ static int lzorle_sdecompress(struct crypto_scomp *tfm, const u8 *src,
 
 static struct crypto_alg alg = {
 	.cra_name		= "lzo-rle",
+	.cra_driver_name	= "lzo-rle-generic",
 	.cra_flags		= CRYPTO_ALG_TYPE_COMPRESS,
 	.cra_ctxsize		= sizeof(struct lzorle_ctx),
 	.cra_module		= THIS_MODULE,
@@ -167,7 +168,7 @@ static void __exit lzorle_mod_fini(void)
 	crypto_unregister_scomp(&scomp);
 }
 
-module_init(lzorle_mod_init);
+subsys_initcall(lzorle_mod_init);
 module_exit(lzorle_mod_fini);
 
 MODULE_LICENSE("GPL");

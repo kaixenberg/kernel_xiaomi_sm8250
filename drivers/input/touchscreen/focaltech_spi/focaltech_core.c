@@ -1552,6 +1552,8 @@ static void fts_power_supply_work(struct work_struct *work)
 {
 	struct fts_ts_data *ts_data =
 		container_of(work, struct fts_ts_data, power_supply_work);
+	struct power_supply *usb;
+	union power_supply_propval val;
 	bool charger_mode;
 	int ret;
 
@@ -1565,9 +1567,20 @@ static void fts_power_supply_work(struct work_struct *work)
 #endif
 	pm_stay_awake(ts_data->dev);
 	mutex_lock(&ts_data->power_supply_lock);
-	charger_mode = !!power_supply_is_system_supplied();
+	charger_mode = power_supply_is_system_supplied() > 0;
+	if (!charger_mode) {
+		/* Qualcomm marks USB as device-scoped, so the system helper skips it. */
+		usb = power_supply_get_by_name("usb");
+		if (usb) {
+			ret = power_supply_get_property(usb,
+							POWER_SUPPLY_PROP_PRESENT, &val);
+			power_supply_put(usb);
+			if (ret < 0)
+				goto unlock;
+			charger_mode = !!val.intval;
+		}
+	}
 	if (charger_mode != ts_data->charger_mode) {
-		ts_data->charger_mode = charger_mode;
 		FTS_INFO("%s %d\n", __func__, charger_mode);
 		if (charger_mode) {
 			FTS_INFO("%s USB is exist\n", __func__);
@@ -1583,7 +1596,10 @@ static void fts_power_supply_work(struct work_struct *work)
 					"set power supply not exist fail, ret=%d",
 					ret);
 		}
+		if (ret >= 0)
+			ts_data->charger_mode = charger_mode;
 	}
+unlock:
 	mutex_unlock(&ts_data->power_supply_lock);
 	pm_relax(ts_data->dev);
 }
@@ -1793,6 +1809,16 @@ static int fts_ts_remove_entry(struct fts_ts_data *ts_data)
 {
 	FTS_FUNC_ENTER();
 
+	power_supply_unreg_notifier(&ts_data->power_supply_notifier);
+#if defined(CONFIG_DRM)
+	if (mi_drm_unregister_client(&ts_data->fb_notif))
+		FTS_ERROR("[DRM]Error occurred while unregistering fb_notifier.\n");
+#elif defined(CONFIG_HAS_EARLYSUSPEND)
+	unregister_early_suspend(&ts_data->early_suspend);
+#endif
+	if (ts_data->ts_workqueue)
+		cancel_work_sync(&ts_data->resume_work);
+
 #if FTS_POINT_REPORT_CHECK_EN
 	fts_point_report_check_exit(ts_data);
 #endif
@@ -1813,24 +1839,15 @@ static int fts_ts_remove_entry(struct fts_ts_data *ts_data)
 #endif
 
 	fts_gesture_exit(ts_data);
-	fts_bus_exit(ts_data);
 
 	free_irq(ts_data->irq, ts_data);
-	input_unregister_device(ts_data->input_dev);
-
-	power_supply_unreg_notifier(&ts_data->power_supply_notifier);
-	mutex_destroy(&ts_data->power_supply_lock);
 
 	if (ts_data->ts_workqueue)
 		destroy_workqueue(ts_data->ts_workqueue);
 
-#if defined(CONFIG_DRM)
-	if (mi_drm_unregister_client(&ts_data->fb_notif))
-		FTS_ERROR(
-			"[DRM]Error occurred while unregistering fb_notifier.\n");
-#elif defined(CONFIG_HAS_EARLYSUSPEND)
-	unregister_early_suspend(&ts_data->early_suspend);
-#endif
+	mutex_destroy(&ts_data->power_supply_lock);
+	fts_bus_exit(ts_data);
+	input_unregister_device(ts_data->input_dev);
 
 	if (gpio_is_valid(ts_data->pdata->reset_gpio))
 		gpio_free(ts_data->pdata->reset_gpio);

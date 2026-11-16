@@ -205,7 +205,7 @@ void susfs_spoof_avd_allowed_rcu(u32 s_type, u32 t_type, u32 c_type, u32 *avd_al
  * susfs_restore_creds() afterwards.
  * Returns the original credentials on success, NULL on failure.
  */
-#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
+#if defined(CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER) || defined(CONFIG_KSU_SUSFS_SUS_PATH)
 static struct cred *susfs_switch_to_ksu_domain(void) {
 	struct cred *orig_cred = NULL;
 	struct cred *cred = NULL;
@@ -246,7 +246,7 @@ static void susfs_restore_creds(struct cred *orig_cred) {
 
 	commit_creds(orig_cred);
 }
-#endif // #ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
+#endif // CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER || CONFIG_KSU_SUSFS_SUS_PATH
 
 /* sus_path */
 #ifdef CONFIG_KSU_SUSFS_SUS_PATH
@@ -382,68 +382,460 @@ static void susfs_run_sus_path_loop(void) {
 	revert_creds(saved);
 }
 
-static inline bool is_i_uid_not_allowed(uid_t i_uid) {
-	return likely(current_uid().val != i_uid);
-}
+bool susfs_is_uid_allowed_for_sus_path(uid_t uid);
 
-/* - Please note that path inside /sdcard will be still visible to MediaProvider module,
- *   since the uid of path like /sdcard/TWRP will be the uid of your MediaProvider module.
+/*
+ * Every app uid (10000 and up) is denied, unless it is on the sus_path uid
+ * filter. Lower uids (system, shell, root) always see the paths.
  */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
-bool susfs_is_inode_sus_path(struct mnt_idmap* idmap, struct inode *inode)
-#else
-bool susfs_is_inode_sus_path(struct inode *inode)
-#endif
+__attribute__((hot)) bool susfs_is_inode_sus_path(struct inode *inode)
 {
+	uid_t uid = current_uid().val % 100000;
 	struct fuse_inode *fi = NULL;
-	if (!susfs_is_current_proc_umounted_app()) {
+
+	if (uid < 10000) {
 		return false;
 	}
+
 	if (!inode->i_mapping) {
 		SUSFS_LOGE("inode->i_mapping is NULL\n");
 		return false;
 	}
+
 	if (inode->i_sb->s_magic == FUSE_SUPER_MAGIC) {
 		fi = get_fuse_inode(inode);
 		if (!fi || !fi->inode.i_mapping) {
 			SUSFS_LOGE("fi || fi->inode.i_mapping is NULL\n");
 			return false;
 		}
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
+
 		if (unlikely(test_bit(AS_FLAGS_SUS_PATH, &fi->inode.i_state) &&
-			is_i_uid_not_allowed(i_uid_into_vfsuid(idmap, &fi->inode).val)))
-#elif LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
-		if (unlikely(test_bit(AS_FLAGS_SUS_PATH, &fi->inode.i_state) &&
-			is_i_uid_not_allowed(i_uid_into_mnt(i_user_ns(&fi->inode), &fi->inode).val)))
-#else
-		if (unlikely(test_bit(AS_FLAGS_SUS_PATH, &fi->inode.i_state) &&
-			is_i_uid_not_allowed(fi->inode.i_uid.val)))
-#endif
+			likely(!susfs_is_uid_allowed_for_sus_path(uid))))
 		{
-			SUSFS_LOGI("hiding path with ino '%lu'\n", inode->i_ino);
 			return true;
 		}
 		return false;
 	}
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
+
 	if (unlikely(test_bit(AS_FLAGS_SUS_PATH, &inode->i_state) &&
-		is_i_uid_not_allowed(i_uid_into_vfsuid(idmap, inode).val)))
-#elif LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
-	if (unlikely(test_bit(AS_FLAGS_SUS_PATH, &inode->i_state) &&
-		is_i_uid_not_allowed(i_uid_into_mnt(i_user_ns(inode), inode).val)))
-#else
-	if (unlikely(test_bit(AS_FLAGS_SUS_PATH, &inode->i_state) &&
-		is_i_uid_not_allowed(inode->i_uid.val)))
-#endif
+		likely(!susfs_is_uid_allowed_for_sus_path(uid))))
 	{
-		SUSFS_LOGI("hiding path with ino '%lu'\n", inode->i_ino);
 		return true;
 	}
+
 	return false;
 }
 
-int susfs_get_data_path(struct path *path) {
-	return kern_path("/data", LOOKUP_FOLLOW, path);
+/*****************************************/
+/* sus_path uid filter (bitmap)          */
+/*****************************************/
+/* The uids of the apps that are allowed to see the added sus paths.
+ * Every other uid within the app uid range (10000 - 19999) is denied.
+ * Effective only on process with uid >= 10000
+ */
+struct susfs_sus_path_uid_filter_bitmap {
+	struct rcu_head			rcu;
+	unsigned long			bits[SUSFS_UID_FILTER_BITMAP_LEN];
+};
+
+static struct susfs_sus_path_uid_filter_bitmap __rcu *sus_path_uid_filter_bitmap;
+static DEFINE_MUTEX(susfs_mutex_lock_sus_path_uid_filter);
+/*
+ * The app package names of the apps that are currently allowed to see
+ * the added sus paths. They are stored so that the uids of the apps can
+ * be resolved again whenever the apps are installed or uninstalled,
+ * because the uid of an app changes when the app is reinstalled.
+ * Protected by susfs_mutex_lock_sus_path_uid_filter.
+ */
+static char *susfs_sus_path_app_strings = NULL;
+/* Ensures that there is only one resolving thread running at the same time */
+static atomic_t susfs_sus_path_app_strings_running = ATOMIC_INIT(0);
+
+/*
+ * Checks whether the given string is a valid app package name.
+ * Returns true if it is a valid app package name.
+ */
+static bool susfs_is_valid_sus_path_app_name(const char *app_name) {
+	const char *p = app_name;
+	size_t len = strlen(app_name);
+
+	if (len == 0 || len > 255)
+		return false;
+
+	/* reject the relative paths to prevent any path traversal */
+	if (!strcmp(app_name, ".") || !strcmp(app_name, ".."))
+		return false;
+
+	for (; *p != '\0'; p++) {
+		if ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+			(*p >= '0' && *p <= '9') || *p == '.' || *p == '_')
+			continue;
+		return false;
+	}
+
+	return true;
+}
+
+/*
+ * Resolves the uid of the given app package name from /data/system/packages.list.
+ * Returns 0 on success, a negative errno on failure.
+ */
+static int susfs_resolve_sus_path_app_uid(const char *app_name, uid_t *uid) {
+	struct file *fp;
+	char *buf = NULL;
+	char *line, *tmp, *p;
+	char *pkg_name, *uid_str;
+	loff_t pos = 0;
+	loff_t size;
+	unsigned long val;
+	ssize_t nread;
+
+	if (!app_name || !*app_name || !uid)
+		return -EINVAL;
+
+	if (!susfs_is_valid_sus_path_app_name(app_name))
+		return -EINVAL;
+
+	fp = filp_open("/data/system/packages.list", O_RDONLY | O_NOATIME, 0);
+	if (IS_ERR(fp)) {
+		SUSFS_LOGE("failed to open /data/system/packages.list: %ld\n", PTR_ERR(fp));
+		return PTR_ERR(fp);
+	}
+
+	size = i_size_read(file_inode(fp));
+	if (size <= 0 || size > (4 * 1024 * 1024)) {
+		filp_close(fp, NULL);
+		return -EFBIG;
+	}
+
+	buf = vmalloc(size + 1);
+	if (!buf) {
+		filp_close(fp, NULL);
+		return -ENOMEM;
+	}
+	buf[size] = '\0';
+
+	nread = kernel_read(fp, buf, size, &pos);
+	filp_close(fp, NULL);
+	if (nread != size) {
+		vfree(buf);
+		return -EIO;
+	}
+
+	line = buf;
+	while (line && *line) {
+		p = strchr(line, '\n');
+		if (p) {
+			*p = '\0';
+			tmp = p + 1;
+		} else {
+			tmp = NULL;
+		}
+
+		/* skip empty lines */
+		if (*line == '\0' || *line == '\r') {
+			line = tmp;
+			continue;
+		}
+
+		/* packages.list format: <package> <uid> <gid> ... */
+		pkg_name = strsep(&line, " \t");
+		if (!pkg_name || *pkg_name == '\0') {
+			line = tmp;
+			continue;
+		}
+
+		uid_str = strsep(&line, " \t");
+		if (!uid_str || *uid_str == '\0') {
+			line = tmp;
+			continue;
+		}
+
+		if (!strcmp(pkg_name, app_name)) {
+			if (kstrtoul(uid_str, 10, &val)) {
+				vfree(buf);
+				return -EINVAL;
+			}
+
+			*uid = (uid_t)val % 100000;
+
+			vfree(buf);
+
+			if (*uid < SUSFS_UID_FILTER_MIN_UID ||
+				*uid > SUSFS_UID_FILTER_MAX_UID)
+				return -EINVAL;
+
+			return 0;
+		}
+
+		line = tmp;
+	}
+
+	vfree(buf);
+	return -ENOENT;
+}
+
+/*
+ * Parses the comma separated list of the app package names, resolves the uid
+ * of every app and maps the uids into the given bitmap.
+ *
+ * The spaces before and after the commas are ignored.
+ * The given string is modified while it is being parsed.
+ * If 'skip_failed' is true, the apps that cannot be resolved are skipped
+ * (they are uninstalled already), otherwise an error is returned.
+ * Returns 0 on success, a negative errno on failure.
+ */
+static int susfs_parse_sus_path_app_names(char *app_str, unsigned long *bits, bool skip_failed) {
+	char *token = NULL;
+	char *saveptr = app_str;
+	uid_t uid = 0;
+	int ret;
+
+	while ((token = strsep(&saveptr, ",")) != NULL) {
+		token = strim(token);
+		if (*token == '\0') {
+			/* tolerate the empty items, e.g., "com.foo,,com.bar" */
+			continue;
+		}
+
+		if (!susfs_is_valid_sus_path_app_name(token)) {
+			SUSFS_LOGE("invalid app name '%s'\n", token);
+			return -EINVAL;
+		}
+
+		ret = susfs_resolve_sus_path_app_uid(token, &uid);
+		if (ret) {
+			if (skip_failed)
+				continue;
+			return ret;
+		}
+
+		if (uid < SUSFS_UID_FILTER_MIN_UID || uid > SUSFS_UID_FILTER_MAX_UID) {
+			SUSFS_LOGE("the uid %u of the app '%s' is out of the allowed range [%d, %d]\n",
+						uid, token, SUSFS_UID_FILTER_MIN_UID,
+						SUSFS_UID_FILTER_MAX_UID);
+			if (!skip_failed)
+				return -EINVAL;
+			continue;
+		}
+
+		set_bit(uid - SUSFS_UID_FILTER_MIN_UID, bits);
+		SUSFS_LOGI("app_name '%s', uid '%u' is now added to sus_path_uid_filter_bitmap\n", token, uid);
+	}
+
+	return 0;
+}
+
+void susfs_set_sus_path_uid_filter(void __user **user_info) {
+	struct st_susfs_sus_path_uid_filter *info = NULL;
+	struct susfs_sus_path_uid_filter_bitmap *new_bitmap = NULL;
+	struct susfs_sus_path_uid_filter_bitmap *old_bitmap = NULL;
+	char *new_app_strings = NULL;
+	struct cred *orig_cred = NULL;
+	size_t app_str_len = 0;
+	int err = 0;
+	static bool is_uid_filter_set_before = false;
+
+	info = kvmalloc(sizeof(*info), GFP_KERNEL | __GFP_ZERO);
+	if (!info) {
+		err = -ENOMEM;
+		goto out_copy_to_user;
+	}
+
+	if (copy_from_user(info, (struct st_susfs_sus_path_uid_filter __user*)*user_info, sizeof(*info))) {
+		err = -EFAULT;
+		goto out_copy_to_user;
+	}
+
+	/* the app names string must be null terminated within the buffer */
+	if (!memchr(info->app_strings, '\0', sizeof(info->app_strings))) {
+		SUSFS_LOGE("the app names string is not null terminated\n");
+		err = -EINVAL;
+		goto out_copy_to_user;
+	}
+
+	if (*info->app_strings == '\0') {
+		SUSFS_LOGE("the app names string cannot be empty\n");
+		err = -EINVAL;
+		goto out_copy_to_user;
+	}
+
+	app_str_len = strlen(info->app_strings);
+
+	/*
+	 * The app names are stored as they are, so that the uids of the apps can
+	 * be resolved again later on, when the apps are installed or uninstalled.
+	 */
+	new_app_strings = kvmalloc(app_str_len + 1, GFP_KERNEL | __GFP_ZERO);
+	if (!new_app_strings) {
+		err = -ENOMEM;
+		goto out_copy_to_user;
+	}
+	memcpy(new_app_strings, info->app_strings, app_str_len + 1);
+
+	new_bitmap = kzalloc(sizeof(*new_bitmap), GFP_KERNEL);
+	if (!new_bitmap) {
+		err = -ENOMEM;
+		goto out_free_new_app_strings;
+	}
+
+	/*
+	 * packages.list cannot be read with the selinux restrictions of the
+	 * calling process, hence the selinux domain is switched to the
+	 * KernelSU one before the uids are resolved.
+	 */
+	orig_cred = susfs_switch_to_ksu_domain();
+	if (!orig_cred) {
+		err = -EINVAL;
+		goto out_free_new_bitmap;
+	}
+
+	if (is_uid_filter_set_before)
+		SUSFS_LOGI("renewing the sus path uid filter\n");
+	err = susfs_parse_sus_path_app_names(info->app_strings, new_bitmap->bits, true);
+
+	susfs_restore_creds(orig_cred);
+	orig_cred = NULL;
+
+	if (err)
+		goto out_free_new_bitmap;
+
+	/*
+	 * Publish the new bitmap and drop the old one.
+	 * The mutex serializes the writers, while the readers are protected
+	 * by RCU, hence the readers always see a consistent bitmap and they
+	 * never access a freed bitmap.
+	 */
+	mutex_lock(&susfs_mutex_lock_sus_path_uid_filter);
+	old_bitmap = rcu_dereference_protected(sus_path_uid_filter_bitmap, lockdep_is_held(&susfs_mutex_lock_sus_path_uid_filter));
+	rcu_assign_pointer(sus_path_uid_filter_bitmap, new_bitmap);
+	new_bitmap = NULL;
+	kvfree(susfs_sus_path_app_strings);
+	susfs_sus_path_app_strings = new_app_strings;
+	new_app_strings = NULL;
+	is_uid_filter_set_before = true;
+	mutex_unlock(&susfs_mutex_lock_sus_path_uid_filter);
+	if (old_bitmap)
+		kfree_rcu(old_bitmap, rcu);
+
+	SUSFS_LOGI("the sus path uid filter is set\n");
+	err = 0;
+
+out_free_new_bitmap:
+	kfree(new_bitmap);
+out_free_new_app_strings:
+	kvfree(new_app_strings);
+out_copy_to_user:
+	if (copy_to_user(&((struct st_susfs_sus_path_uid_filter __user*)*user_info)->err, &err, sizeof(err))) {
+		err = -EFAULT;
+	}
+	SUSFS_LOGI("CMD_SUSFS_SET_SUS_PATH_UID_FILTER -> ret: %d\n", err);
+	kvfree(info);
+}
+
+/*
+ * The thread that resolves the uids of the stored app package names again,
+ * so that the filter stays up to date when the apps are installed or
+ * uninstalled, because the uid of an app changes when it is reinstalled.
+ */
+static int susfs_sus_path_app_strings_worker(void *data) {
+	struct susfs_sus_path_uid_filter_bitmap *new_bitmap = NULL;
+	struct susfs_sus_path_uid_filter_bitmap *old_bitmap = NULL;
+	struct cred *orig_cred = NULL;
+	char *app_strings = NULL;
+	size_t app_str_len = 0;
+	int ret = 0;
+
+	orig_cred = susfs_switch_to_ksu_domain();
+	if (!orig_cred)
+		goto out;
+
+	/* take a snapshot of the stored app package names */
+	mutex_lock(&susfs_mutex_lock_sus_path_uid_filter);
+	if (susfs_sus_path_app_strings) {
+		app_str_len = strlen(susfs_sus_path_app_strings);
+		app_strings = kvmalloc(app_str_len + 1, GFP_KERNEL | __GFP_ZERO);
+		if (app_strings)
+			memcpy(app_strings, susfs_sus_path_app_strings, app_str_len + 1);
+	}
+	mutex_unlock(&susfs_mutex_lock_sus_path_uid_filter);
+
+	if (!app_strings)
+		goto out_restore_creds;
+
+	new_bitmap = kzalloc(sizeof(*new_bitmap), GFP_KERNEL);
+	if (!new_bitmap)
+		goto out_restore_creds;
+
+	/* the apps that are uninstalled already are skipped */
+	ret = susfs_parse_sus_path_app_names(app_strings, new_bitmap->bits, true);
+	if (ret)
+		goto out_restore_creds;
+
+	mutex_lock(&susfs_mutex_lock_sus_path_uid_filter);
+	old_bitmap = rcu_dereference_protected(sus_path_uid_filter_bitmap, lockdep_is_held(&susfs_mutex_lock_sus_path_uid_filter));
+	rcu_assign_pointer(sus_path_uid_filter_bitmap, new_bitmap);
+	new_bitmap = NULL;
+	mutex_unlock(&susfs_mutex_lock_sus_path_uid_filter);
+	if (old_bitmap)
+		kfree_rcu(old_bitmap, rcu);
+
+	SUSFS_LOGI("the uids of the sus path uid filter are resolved again\n");
+
+out_restore_creds:
+	susfs_restore_creds(orig_cred);
+	orig_cred = NULL;
+out:
+	kfree(new_bitmap);
+	kvfree(app_strings);
+	atomic_set(&susfs_sus_path_app_strings_running, 0);
+
+	return ret;
+}
+
+/*
+ * Resolves the uids of the stored app package names again in a new thread,
+ * because the resolving of the uids requires the KernelSU selinux domain,
+ * which must not be applied to the calling process.
+ */
+void susfs_parse_sus_path_app_strings(void) {
+	/* nothing to resolve until the filter has been set */
+	if (!READ_ONCE(susfs_sus_path_app_strings))
+		return;
+
+	/* do not spawn a new thread if there is already one running */
+	if (atomic_cmpxchg(&susfs_sus_path_app_strings_running, 0, 1))
+		return;
+
+	if (IS_ERR(kthread_run(susfs_sus_path_app_strings_worker, NULL, "susfs_spuid_appstr"))) {
+		atomic_set(&susfs_sus_path_app_strings_running, 0);
+		SUSFS_LOGE("failed to create the thread susfs_sus_path_app_strings\n");
+	}
+}
+
+/*
+ * Lockless lookup for the sus_path hiding path.
+ * Returns true if the uid may see the added sus paths.
+ */
+bool susfs_is_uid_allowed_for_sus_path(uid_t uid) {
+	struct susfs_sus_path_uid_filter_bitmap *bitmap;
+	bool allowed = false;
+
+	/* isolated processes (90000+) keep seeing them, as upstream */
+	if (uid >= 90000)
+		return true;
+
+	if (uid < SUSFS_UID_FILTER_MIN_UID ||
+		uid > SUSFS_UID_FILTER_MAX_UID)
+		return false;
+
+	rcu_read_lock();
+	bitmap = rcu_dereference(sus_path_uid_filter_bitmap);
+	if (likely(bitmap))
+		allowed = test_bit(uid - SUSFS_UID_FILTER_MIN_UID, bitmap->bits);
+	rcu_read_unlock();
+
+	return allowed;
 }
 #endif // #ifdef CONFIG_KSU_SUSFS_SUS_PATH
 
@@ -1408,14 +1800,14 @@ out_copy_to_user:
  * to find out the existing uids. Only the uids within the app uid range
  * (10000 - 19999) are supported.
  */
-#define SUSFS_PRIORITY_UID_FILTER_MIN_UID 10000
-#define SUSFS_PRIORITY_UID_FILTER_MAX_UID 19999
-#define SUSFS_PRIORITY_UID_FILTER_UID_NUM (SUSFS_PRIORITY_UID_FILTER_MAX_UID - SUSFS_PRIORITY_UID_FILTER_MIN_UID + 1)
-#define SUSFS_PRIORITY_UID_FILTER_BITMAP_LEN BITS_TO_LONGS(SUSFS_PRIORITY_UID_FILTER_UID_NUM)
+#define SUSFS_UID_FILTER_MIN_UID 10000
+#define SUSFS_UID_FILTER_MAX_UID 19999
+#define SUSFS_UID_FILTER_UID_NUM (SUSFS_UID_FILTER_MAX_UID - SUSFS_UID_FILTER_MIN_UID + 1)
+#define SUSFS_UID_FILTER_BITMAP_LEN BITS_TO_LONGS(SUSFS_UID_FILTER_UID_NUM)
 
 struct susfs_priority_uid_filter_bitmap {
 	struct rcu_head			rcu;
-	unsigned long			bits[SUSFS_PRIORITY_UID_FILTER_BITMAP_LEN];
+	unsigned long			bits[SUSFS_UID_FILTER_BITMAP_LEN];
 };
 
 static struct susfs_priority_uid_filter_bitmap __rcu *priority_uid_filter_bitmap;
@@ -1542,8 +1934,8 @@ static int susfs_resolve_priority_app_uid(const char *app_name, uid_t *uid) {
 
 			vfree(buf);
 
-			if (*uid < SUSFS_PRIORITY_UID_FILTER_MIN_UID ||
-			    *uid > SUSFS_PRIORITY_UID_FILTER_MAX_UID)
+			if (*uid < SUSFS_UID_FILTER_MIN_UID ||
+			    *uid > SUSFS_UID_FILTER_MAX_UID)
 				return -EINVAL;
 
 			return 0;
@@ -1591,16 +1983,16 @@ static int susfs_parse_priority_app_names(char *app_str, unsigned long *bits, bo
 			return ret;
 		}
 
-		if (uid < SUSFS_PRIORITY_UID_FILTER_MIN_UID || uid > SUSFS_PRIORITY_UID_FILTER_MAX_UID) {
+		if (uid < SUSFS_UID_FILTER_MIN_UID || uid > SUSFS_UID_FILTER_MAX_UID) {
 			SUSFS_LOGE("the uid %u of the app '%s' is out of the allowed range [%d, %d]\n",
-					uid, token, SUSFS_PRIORITY_UID_FILTER_MIN_UID,
-					SUSFS_PRIORITY_UID_FILTER_MAX_UID);
+					uid, token, SUSFS_UID_FILTER_MIN_UID,
+					SUSFS_UID_FILTER_MAX_UID);
 			if (!skip_failed)
 				return -EINVAL;
 			continue;
 		}
 
-		set_bit(uid - SUSFS_PRIORITY_UID_FILTER_MIN_UID, bits);
+		set_bit(uid - SUSFS_UID_FILTER_MIN_UID, bits);
 		SUSFS_LOGI("app_name '%s', uid '%u' is now added to priority_uid_filter_bitmap\n", token, uid);
 	}
 
@@ -1828,14 +2220,14 @@ bool susfs_is_priority_uid_filtered(uid_t uid) {
 
 	uid_t app_id = uid % 100000;
 
-	if (app_id < SUSFS_PRIORITY_UID_FILTER_MIN_UID ||
-		app_id > SUSFS_PRIORITY_UID_FILTER_MAX_UID)
+	if (app_id < SUSFS_UID_FILTER_MIN_UID ||
+		app_id > SUSFS_UID_FILTER_MAX_UID)
 		return false;
 
 	/* no need rcu_read_lock() and rcu_read_unlock() here as caller already holds it */
 	bitmap = rcu_dereference(priority_uid_filter_bitmap);
 	if (likely(bitmap)) {
-		if (test_bit(app_id - SUSFS_PRIORITY_UID_FILTER_MIN_UID, bitmap->bits)) {
+		if (test_bit(app_id - SUSFS_UID_FILTER_MIN_UID, bitmap->bits)) {
 			//SUSFS_LOGI("uid '%u' is filtered\n", uid);
 			return true;
 		}
@@ -2235,6 +2627,9 @@ void susfs_handle_cmd(unsigned int cmd, void __user **arg)
 		return;
 	case CMD_SUSFS_ADD_SUS_PATH_LOOP:
 		susfs_add_sus_path_loop(arg);
+		return;
+	case CMD_SUSFS_SET_SUS_PATH_UID_FILTER:
+		susfs_set_sus_path_uid_filter(arg);
 		return;
 #endif
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT

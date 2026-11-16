@@ -117,6 +117,7 @@ static int ecb_arc4_crypt(struct blkcipher_desc *desc, struct scatterlist *dst,
 
 static struct crypto_alg arc4_algs[2] = { {
 	.cra_name		=	"arc4",
+	.cra_driver_name	=	"arc4-generic",
 	.cra_flags		=	CRYPTO_ALG_TYPE_CIPHER,
 	.cra_blocksize		=	ARC4_BLOCK_SIZE,
 	.cra_ctxsize		=	sizeof(struct arc4_ctx),
@@ -132,6 +133,7 @@ static struct crypto_alg arc4_algs[2] = { {
 	},
 }, {
 	.cra_name		=	"ecb(arc4)",
+	.cra_driver_name	=	"ecb(arc4)-generic",
 	.cra_priority		=	100,
 	.cra_flags		=	CRYPTO_ALG_TYPE_BLKCIPHER,
 	.cra_blocksize		=	ARC4_BLOCK_SIZE,
@@ -160,7 +162,7 @@ static void __exit arc4_exit(void)
 	crypto_unregister_algs(arc4_algs, ARRAY_SIZE(arc4_algs));
 }
 
-module_init(arc4_init);
+subsys_initcall(arc4_init);
 module_exit(arc4_exit);
 
 MODULE_LICENSE("GPL");

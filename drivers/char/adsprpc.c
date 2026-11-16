@@ -57,7 +57,6 @@
 #define VMID_SSC_Q6     5
 #define VMID_ADSP_Q6    6
 #define DEBUGFS_SIZE 3072
-#define UL_SIZE 25
 #define PID_SIZE 10
 
 #define AUDIO_PDR_SERVICE_LOCATION_CLIENT_NAME   "audio_pdr_adsprpc"
@@ -174,12 +173,8 @@ enum fastrpc_remote_subsys_state {
 
 #define FASTRPC_GLINK_LOG_PAGES 8
 #define LOG_FASTRPC_GLINK_MSG(ctx, x, ...)	\
-	do {				\
-		if (ctx)		\
-			ipc_log_string(ctx, "%s (%d, %d): "x,	\
-				current->comm, current->tgid, current->pid, \
-				##__VA_ARGS__); \
-	} while (0)
+	ipc_log_string(ctx, "%s (%d, %d): "x,	\
+		current->comm, current->tgid, current->pid, ##__VA_ARGS__)
 
 static int fastrpc_pdr_notifier_cb(struct notifier_block *nb,
 					unsigned long code,
@@ -1451,7 +1446,7 @@ static int context_alloc(struct fastrpc_file *fl, uint32_t kernel,
 		sizeof(*ctx->overs) * (bufs) +
 		sizeof(*ctx->overps) * (bufs);
 
-	VERIFY(err, NULL != (ctx = kzalloc(sizeof(*ctx) + size, GFP_KERNEL)));
+	VERIFY(err, NULL != (ctx = kvzalloc(sizeof(*ctx) + size, GFP_KERNEL)));
 	if (err)
 		goto bail;
 
@@ -1583,7 +1578,7 @@ static void context_free(struct smq_invoke_ctx *ctx)
 
 	trace_fastrpc_context_free((uint64_t)ctx,
 		ctx->msg.invoke.header.ctx, ctx->handle, ctx->sc);
-	kfree(ctx);
+	kvfree(ctx);
 }
 
 static void context_notify_user(struct smq_invoke_ctx *ctx,
@@ -2942,7 +2937,7 @@ static int fastrpc_send_cpuinfo_to_dsp(struct fastrpc_file *fl)
 	uint64_t cpuinfo = 0;
 	struct fastrpc_apps *me = &gfa;
 	struct fastrpc_ioctl_invoke_crc ioctl;
-	remote_arg_t ra[2];
+	remote_arg_t ra[1];
 	int cid = -1;
 
 	if (!fl) {
@@ -3482,9 +3477,7 @@ static int fastrpc_internal_munmap(struct fastrpc_file *fl,
 
 	VERIFY(err, fl->dsp_proc_init == 1);
 	if (err) {
-		pr_err("adsprpc: ERROR: %s: user application %s trying to unmap without initialization\n",
-			 __func__, current->comm);
-		err = EBADR;
+		err = -EHOSTDOWN;
 		return err;
 	}
 	mutex_lock(&fl->internal_map_mutex);
@@ -3522,13 +3515,15 @@ static int fastrpc_internal_munmap(struct fastrpc_file *fl,
 		err = -EINVAL;
 		goto bail;
 	}
-	VERIFY(err, !fastrpc_munmap_on_dsp(fl, map->raddr,
-			map->phys, map->size, map->flags));
-	if (err)
-		goto bail;
-	mutex_lock(&fl->map_mutex);
-	fastrpc_mmap_free(map, 0);
-	mutex_unlock(&fl->map_mutex);
+	if (map) {
+		VERIFY(err, !fastrpc_munmap_on_dsp(fl, map->raddr,
+					map->phys, map->size, map->flags));
+		if (err)
+			goto bail;
+		mutex_lock(&fl->map_mutex);
+		fastrpc_mmap_free(map, 0);
+		mutex_unlock(&fl->map_mutex);
+	}
 bail:
 	if (err && map) {
 		mutex_lock(&fl->map_mutex);
@@ -3559,9 +3554,7 @@ static int fastrpc_internal_munmap_fd(struct fastrpc_file *fl,
 		return err;
 	VERIFY(err, fl->dsp_proc_init == 1);
 	if (err) {
-		pr_err("adsprpc: ERROR: %s: user application %s trying to unmap without initialization\n",
-			__func__, current->comm);
-		err = EBADR;
+		err = -EHOSTDOWN;
 		return err;
 	}
 	mutex_lock(&fl->internal_map_mutex);
@@ -3596,9 +3589,7 @@ static int fastrpc_internal_mmap(struct fastrpc_file *fl,
 
 	VERIFY(err, fl->dsp_proc_init == 1);
 	if (err) {
-		pr_err("adsprpc: ERROR: %s: user application %s trying to map without initialization\n",
-			__func__, current->comm);
-		err = EBADR;
+		err = -EHOSTDOWN;
 		return err;
 	}
 	mutex_lock(&fl->internal_map_mutex);
@@ -3984,8 +3975,8 @@ static ssize_t fastrpc_debugfs_read(struct file *filp, char __user *buffer,
 	unsigned int len = 0;
 	int i, j, sess_used = 0, ret = 0;
 	char *fileinfo = NULL;
-	char single_line[UL_SIZE] = "----------------";
-	char title[UL_SIZE] = "=========================";
+	char single_line[] = "----------------";
+	char title[] = "========================";
 
 	fileinfo = kzalloc(DEBUGFS_SIZE, GFP_KERNEL);
 	if (!fileinfo)
@@ -5093,7 +5084,7 @@ static int fastrpc_cb_probe(struct device *dev)
 	}
 
 	chan->sesscount++;
-	if (debugfs_root) {
+	if (debugfs_root && !debugfs_global_file) {
 		debugfs_global_file = debugfs_create_file("global", 0644,
 			debugfs_root, NULL, &debugfs_fops);
 		if (IS_ERR_OR_NULL(debugfs_global_file)) {
@@ -5285,6 +5276,7 @@ static int fastrpc_probe(struct platform_device *pdev)
 	struct device_node *ion_node, *node;
 	struct platform_device *ion_pdev;
 	struct cma *cma;
+	uint32_t vmid_ssc_q6;
 	uint32_t val;
 	int ret = 0;
 	uint32_t secure_domains;
@@ -5317,6 +5309,9 @@ static int fastrpc_probe(struct platform_device *pdev)
 					"qcom,msm-fastrpc-legacy-compute-cb"))
 		return fastrpc_cb_legacy_probe(dev);
 
+	if (of_property_read_u32(dev->of_node, "qcom,vmid-ssc-q6", &vmid_ssc_q6))
+		vmid_ssc_q6 = VMID_SSC_Q6;
+
 	if (of_device_is_compatible(dev->of_node,
 					"qcom,msm-adsprpc-mem-region")) {
 		me->dev = dev;
@@ -5342,7 +5337,7 @@ static int fastrpc_probe(struct platform_device *pdev)
 		if (range.addr && !of_property_read_bool(dev->of_node,
 							 "restrict-access")) {
 			int srcVM[1] = {VMID_HLOS};
-			int destVM[4] = {VMID_HLOS, VMID_MSS_MSA, VMID_SSC_Q6,
+			int destVM[4] = {VMID_HLOS, VMID_MSS_MSA, vmid_ssc_q6,
 						VMID_ADSP_Q6};
 			int destVMperm[4] = {PERM_READ | PERM_WRITE | PERM_EXEC,
 				PERM_READ | PERM_WRITE | PERM_EXEC,
@@ -5465,6 +5460,7 @@ static struct platform_driver fastrpc_driver = {
 static const struct rpmsg_device_id fastrpc_rpmsg_match[] = {
 	{ FASTRPC_GLINK_GUID },
 	{ FASTRPC_SMD_GUID },
+	{ },
 };
 
 static const struct of_device_id fastrpc_rpmsg_of_match[] = {

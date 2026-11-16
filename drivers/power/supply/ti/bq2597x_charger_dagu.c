@@ -1044,9 +1044,9 @@ static int bq2597x_set_adc_average(struct bq2597x *bq, bool avg)
 
 	val <<= BQ2597X_ADC_AVG_SHIFT;
 
-	ret = bq2597x_update_bits(bq, BQ2597X_REG_14,
-				BQ2597X_ADC_AVG_MASK, val);
-	return 0;
+	ret = bq2597x_update_bits(bq, BQ2597X_REG_14, BQ2597X_ADC_AVG_MASK,
+				  val);
+	return ret;
 }
 EXPORT_SYMBOL_GPL(bq2597x_set_adc_average);
 
@@ -1107,7 +1107,7 @@ static int bq2597x_get_adc_data(struct bq2597x *bq, int channel,  int *result)
 		*result = t;
 		/* vbat need calibration read by NU2105 */
 		if (channel == ADC_VBAT) {
-			t = t * (1 + 1803 / 1000000);
+			t = div_s64((s64)t * 1001803, 1000000);
 			*result = t;
 		}
 	} else {
@@ -1498,7 +1498,7 @@ static int bq2597x_get_dev_role(struct i2c_client *client)
 		return -EINVAL;
 	}
 
-	dev_info(&client->dev, "%s: matched to %s, dev_role: %d.\n", __func__,
+	dev_info(&client->dev, "%s: matched to %s, dev_role: %lu.\n", __func__,
 		 of_id->compatible, (uintptr_t)of_id->data);
 
 	return (uintptr_t)of_id->data;
@@ -2245,8 +2245,9 @@ static int bq2597x_psy_register(struct bq2597x *bq)
 	bq->fc2_psy = devm_power_supply_register(bq->dev,
 			&bq->psy_desc, &bq->psy_cfg);
 	if (IS_ERR(bq->fc2_psy)) {
+		ret = PTR_ERR(bq->fc2_psy);
 		bq_err("failed to register fc2_psy:%d\n", ret);
-		return PTR_ERR(bq->fc2_psy);
+		return ret;
 	}
 
 	bq_info("%s power supply register successfully\n", bq->psy_desc.name);
@@ -2360,7 +2361,6 @@ static void bq2597x_check_fault_status(struct bq2597x *bq)
 	int ret;
 	u8 flag = 0;
 	u8 stat = 0;
-	bool changed = false;
 
 	mutex_lock(&bq->data_lock);
 
@@ -2373,7 +2373,6 @@ static void bq2597x_check_fault_status(struct bq2597x *bq)
 		bq_err("FAULT_FLAG = 0x%02X\n", flag);
 
 	if (!ret && flag != bq->prev_fault) {
-		changed = true;
 		bq->prev_fault = flag;
 		bq->bat_ovp_fault = !!(flag & BAT_OVP_FAULT);
 		bq->bat_ocp_fault = !!(flag & BAT_OCP_FAULT);

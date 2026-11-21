@@ -155,7 +155,7 @@ struct usb_hub *usb_hub_to_struct_hub(struct usb_device *hdev)
 
 int usb_device_supports_lpm(struct usb_device *udev)
 {
-	/* Some devices have trouble with LPM so can't support lpm*/
+	/* Some devices have trouble with LPM  so can't support LPM */
 	return 0;
 
 	/* Skip if the device BOS descriptor couldn't be read */
@@ -2234,12 +2234,12 @@ void usb_disconnect(struct usb_device **pdev)
 	dev_info(&udev->dev, "USB disconnect, device number %d\n",
 			udev->devnum);
 
-	if(udev->parent){
+	if (udev->parent) {
 		hub = usb_hub_to_struct_hub(udev->parent);
-		if(hub->asuspend && hub->addr_number == udev->devnum){
+		if (hub->asuspend && hub->addr_number == udev->devnum) {
 			hub->asuspend = 0;
 			hub->addr_number = 0;
-			dev_info(&udev->dev,"usb_disconnect reset asuspend and addr_number\n");
+			dev_info(&udev->dev, "usb_disconnect reset asuspend and addr_number\n");
 		}
 	}
 
@@ -2585,9 +2585,10 @@ int usb_new_device(struct usb_device *udev)
 	/* Tell the world! */
 	announce_device(udev);
 
-	if (udev->parent){
+	if (udev->parent) {
 		temp_hub = usb_hub_to_struct_hub(udev->parent);
-		if(le16_to_cpu(udev->descriptor.idVendor) == 0x0bda && 0x4b79 == le16_to_cpu(udev->descriptor.idProduct)){
+		if (le16_to_cpu(udev->descriptor.idVendor) == 0x0bda &&
+		    le16_to_cpu(udev->descriptor.idProduct) == 0x4b79) {
 			temp_hub->asuspend = 1;
 			temp_hub->addr_number = udev->devnum;
 		}

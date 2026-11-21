@@ -65,7 +65,7 @@ enum plug_orientation {
 	ORIENTATION_CC2,
 };
 
-#if IS_ENABLED(CONFIG_USB_PD_POLICY)
+#if IS_ENABLED(CONFIG_USB_PD_POLICY) || IS_ENABLED(CONFIG_USB_PD_POLICY_MUNCH) || IS_ENABLED(CONFIG_USB_PD_POLICY_DAGU)
 extern bool has_dp_flag;
 
 int usbpd_select_pdo(struct usbpd *pd, int pdo, int uv, int ua);

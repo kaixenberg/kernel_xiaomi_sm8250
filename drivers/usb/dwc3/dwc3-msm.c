@@ -47,8 +47,7 @@
 #include "dbm.h"
 #include "debug.h"
 #include "xhci.h"
-
-#ifdef CONFIG_PS5169
+#if defined(CONFIG_MACH_XIAOMI_DAGU) || !defined(CONFIG_NO_PS_USB3)
 #include "../pd/ps5169.h"
 #endif
 
@@ -57,6 +56,7 @@ module_param(bc12_compliance, bool, 0644);
 MODULE_PARM_DESC(bc12_compliance, "Disable sending dp pulse for CDP");
 
 #define SDP_CONNETION_CHECK_TIME 10000 /* in ms */
+#define EXTCON_SYNC_EVENT_TIMEOUT_MS 1500 /* in ms */
 
 /* time out to wait for USB cable status notification (in ms)*/
 #define SM_INIT_TIMEOUT 30000
@@ -516,7 +516,6 @@ static inline bool dwc3_msm_is_superspeed(struct dwc3_msm *mdwc)
 		pr_err("the data is null \n");
 		return 0;
 	}
-
 	if (mdwc->in_host_mode) {
 		ret = dwc3_msm_is_host_superspeed(mdwc);
 		dev_info(mdwc->dev, "%s: host SS:%d.\n", __func__,ret);
@@ -3636,20 +3635,21 @@ static ssize_t speed_store(struct device *dev, struct device_attribute *attr,
 }
 static DEVICE_ATTR_RW(speed);
 
-static ssize_t super_speed_show(struct device *dev, struct device_attribute *attr,
+static ssize_t super_speed_show(struct device *dev,
+				struct device_attribute *attr,
 				char *buf)
 {
-	int ret=0;
+	int ret = 0;
 	struct dwc3_msm *mdwc = dev_get_drvdata(dev);
 
 	ret = dwc3_msm_is_superspeed(mdwc);
-	pr_err("super speed value: %d \n",ret);
-	return snprintf(buf, PAGE_SIZE, "%s\n",
-			ret ? "true" : "false");
+	pr_err("super speed value: %d \n", ret);
+	return snprintf(buf, PAGE_SIZE, "%s\n", ret ? "true" : "false");
 }
 
-static ssize_t super_speed_store(struct device *dev, struct device_attribute *attr,
-		const char *buf, size_t count)
+static ssize_t super_speed_store(struct device *dev,
+				 struct device_attribute *attr,
+				 const char *buf, size_t count)
 {
 	return 0;
 }
@@ -3763,12 +3763,41 @@ static int dwc_dpdm_cb(struct notifier_block *nb, unsigned long evt, void *p)
 	return NOTIFY_OK;
 }
 
+static ssize_t usb_data_enabled_show(struct device *dev,
+				     struct device_attribute *attr, char *buf)
+{
+	struct dwc3_msm *mdwc = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%s\n",
+			  mdwc->usb_data_enabled ? "enabled" : "disabled");
+}
+
+static ssize_t usb_data_enabled_store(struct device *dev,
+				      struct device_attribute *attr,
+				      const char *buf, size_t count)
+{
+	struct dwc3_msm *mdwc = dev_get_drvdata(dev);
+
+	if (kstrtobool(buf, &mdwc->usb_data_enabled))
+		return -EINVAL;
+
+	if (!mdwc->usb_data_enabled) {
+		mdwc->vbus_active = false;
+		mdwc->id_state = DWC3_ID_FLOAT;
+		dwc3_ext_event_notify(mdwc);
+	}
+
+	return count;
+}
+static DEVICE_ATTR_RW(usb_data_enabled);
+
 void usb_reset_host(void)
 {
 	struct dwc3_msm *mdwc = container_of(rst_work, struct dwc3_msm, rst_work);
 	if (rst_work != NULL)
 		queue_delayed_work(mdwc->sm_usb_wq, rst_work, 0);
 }
+
 EXPORT_SYMBOL(usb_reset_host);
 
 static void usb_reset_work(struct work_struct *w)
@@ -3801,34 +3830,6 @@ static void usb_reset_work(struct work_struct *w)
 		}
 	}
 }
-
-static ssize_t usb_data_enabled_show(struct device *dev,
-				     struct device_attribute *attr, char *buf)
-{
-	struct dwc3_msm *mdwc = dev_get_drvdata(dev);
-
-	return sysfs_emit(buf, "%s\n",
-			  mdwc->usb_data_enabled ? "enabled" : "disabled");
-}
-
-static ssize_t usb_data_enabled_store(struct device *dev,
-				      struct device_attribute *attr,
-				      const char *buf, size_t count)
-{
-	struct dwc3_msm *mdwc = dev_get_drvdata(dev);
-
-	if (kstrtobool(buf, &mdwc->usb_data_enabled))
-		return -EINVAL;
-
-	if (!mdwc->usb_data_enabled) {
-		mdwc->vbus_active = false;
-		mdwc->id_state = DWC3_ID_FLOAT;
-		dwc3_ext_event_notify(mdwc);
-	}
-
-	return count;
-}
-static DEVICE_ATTR_RW(usb_data_enabled);
 
 static int dwc3_msm_probe(struct platform_device *pdev)
 {
@@ -4086,6 +4087,7 @@ static int dwc3_msm_probe(struct platform_device *pdev)
 				mdwc->bus_scale_table->num_usecases)
 			mdwc->default_bus_vote = BUS_VOTE_NOMINAL;
 		if (strstr(mdwc->bus_scale_table->name, "usb1")) {
+			dev_dbg(&pdev->dev, "%s: USB1 Init RST workqueue!\n", __func__);
 			INIT_DELAYED_WORK(&mdwc->rst_work, usb_reset_work);
 			rst_work = &mdwc->rst_work;
 		}
@@ -4403,7 +4405,6 @@ static void msm_dwc3_perf_vote_work(struct work_struct *w)
 			msecs_to_jiffies(1000 * PM_QOS_SAMPLE_SEC));
 }
 
-
 #define VBUS_REG_CHECK_DELAY	(msecs_to_jiffies(1000))
 
 /**
@@ -4521,7 +4522,7 @@ static int dwc3_otg_start_host(struct dwc3_msm *mdwc, int on)
 		schedule_delayed_work(&mdwc->perf_vote_work,
 				msecs_to_jiffies(1000 * PM_QOS_SAMPLE_SEC));
 
-#ifdef CONFIG_PS5169
+#if defined(CONFIG_MACH_XIAOMI_DAGU) && !defined(CONFIG_NO_PS_USB3)
 		if (!has_dp_flag)
 			ps5169_cfg_usb();
 #endif
@@ -4646,7 +4647,7 @@ static int dwc3_otg_start_peripheral(struct dwc3_msm *mdwc, int on)
 		schedule_delayed_work(&mdwc->perf_vote_work,
 				msecs_to_jiffies(1000 * PM_QOS_SAMPLE_SEC));
 
-#ifdef CONFIG_PS5169
+#if defined(CONFIG_MACH_XIAOMI_DAGU) && !defined(CONFIG_NO_PS_USB3)
 		if (!has_dp_flag)
 			ps5169_cfg_usb();
 #endif
@@ -4676,47 +4677,40 @@ static int dwc3_otg_start_peripheral(struct dwc3_msm *mdwc, int on)
 	return 0;
 }
 
+/**
+ * dwc3_usb_blocking_sync - Waits until event is completed or maximum upto 1.5
+ * secs.
+ *
+ * @host_enable_event: Event can be start usb host or stop usb host.
+ */
 static int dwc3_usb_blocking_sync(struct notifier_block *nb,
-				unsigned long event, void *ptr)
+				unsigned long host_enable_event, void *ptr)
 {
 	struct dwc3 *dwc;
 	struct extcon_dev *edev = ptr;
 	struct extcon_nb *enb = container_of(nb, struct extcon_nb,
 						blocking_sync_nb);
 	struct dwc3_msm *mdwc = enb->mdwc;
-	int ret = 0;
+	unsigned long timeout_ms = jiffies +
+			msecs_to_jiffies(EXTCON_SYNC_EVENT_TIMEOUT_MS);
 
 	if (!edev || !mdwc)
 		return NOTIFY_DONE;
 
 	dwc = platform_get_drvdata(mdwc->dwc3);
-
 	dbg_event(0xFF, "fw_blocksync", 0);
-	flush_work(&mdwc->resume_work);
-	drain_workqueue(mdwc->sm_usb_wq);
 
-	if (!mdwc->in_host_mode && !mdwc->in_device_mode) {
-		dbg_event(0xFF, "lpm_state", atomic_read(&dwc->in_lpm));
+	do {
+		if (mdwc->drd_state == (host_enable_event ? DRD_STATE_HOST
+					: DRD_STATE_IDLE))
+			break;
+		msleep(50);
+	} while (time_before(jiffies, timeout_ms));
 
-		/*
-		 * stop host mode functionality performs autosuspend with mdwc
-		 * device, and it may take sometime to call PM runtime suspend.
-		 * Hence call pm_runtime_suspend() API to invoke PM runtime
-		 * suspend immediately to put USB controller and PHYs into
-		 * suspend.
-		 */
-		ret = pm_runtime_suspend(mdwc->dev);
-		dbg_event(0xFF, "pm_runtime_sus", ret);
+	if (!time_before(jiffies, timeout_ms))
+		dev_err(mdwc->dev, "TIMEOUT when changing the state\n");
 
-		/*
-		 * If mdwc device is already suspended, pm_runtime_suspend() API
-		 * returns 1, which is not error. Overwrite with zero if it is.
-		 */
-		if (ret > 0)
-			ret = 0;
-	}
-
-	return ret;
+	return 0;
 }
 
 static int get_psy_type(struct dwc3_msm *mdwc)
@@ -4937,8 +4931,6 @@ static void dwc3_otg_sm_work(struct work_struct *w)
 			mdwc->vbus_retry_count = 0;
 			work = 1;
 		} else {
-			mdwc->drd_state = DRD_STATE_HOST;
-
 			ret = dwc3_otg_start_host(mdwc, 1);
 			if ((ret == -EPROBE_DEFER) &&
 						mdwc->vbus_retry_count < 3) {
@@ -4946,15 +4938,15 @@ static void dwc3_otg_sm_work(struct work_struct *w)
 				 * Get regulator failed as regulator driver is
 				 * not up yet. Will try to start host after 1sec
 				 */
-				mdwc->drd_state = DRD_STATE_HOST_IDLE;
 				dev_dbg(mdwc->dev, "Unable to get vbus regulator. Retrying...\n");
 				delay = VBUS_REG_CHECK_DELAY;
 				work = 1;
 				mdwc->vbus_retry_count++;
 			} else if (ret) {
 				dev_err(mdwc->dev, "unable to start host\n");
-				mdwc->drd_state = DRD_STATE_HOST_IDLE;
 				goto ret;
+			} else {
+				mdwc->drd_state = DRD_STATE_HOST;
 			}
 		}
 		break;

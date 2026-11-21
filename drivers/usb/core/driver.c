@@ -1789,13 +1789,14 @@ static int autosuspend_check(struct usb_device *udev)
 	if (udev->state == USB_STATE_NOTATTACHED)
 		return -ENODEV;
 
-	if(udev->parent){
+	if (udev->parent) {
 		hub = usb_hub_to_struct_hub(udev->parent);
-		if(hub->asuspend){
-			dev_info(&udev->dev,"autosuspend_check dont autosuspend\n");
+		if (hub->asuspend) {
+			dev_info(&udev->dev, "autosuspend_check dont autosuspend\n");
 			return -EBUSY;
 		}
 	}
+
 	/* Fail if autosuspend is disabled, or any interfaces are in use, or
 	 * any interface drivers require remote wakeup but it isn't available.
 	 */

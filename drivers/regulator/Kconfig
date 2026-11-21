@@ -1182,5 +1182,6 @@ config I2C_RETRY
 	bool "Stub Regulator"
 	help
 	  This help control I2C retry functions
+
 endif
 

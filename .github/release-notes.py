@@ -76,7 +76,8 @@ def commits_between(repo, base, head, limit=400):
         parents = [x["sha"] for x in c["parents"]]
         if len(parents) == 1:
             out.append(c)
-        elif subject.startswith("Merge upstream"):
+        elif (subject.startswith("Merge upstream")
+              or subject.startswith("Merge remote-tracking branch 'upstream/")):
             out.append(c)
         elif not subject.startswith("Merge branch 'nidhi' into"):
             pages = gh_api(f"repos/{repo}/compare/{parents[0]}...{parents[1]}?per_page=100")

@@ -312,6 +312,12 @@ DEFINE_MUTEX(system_transition_mutex);
 #define SUSFS_REBOOT_MAGIC1 0xDEADBEEF
 #endif
 
+#if defined(CONFIG_KSU_MANUAL_HOOK) || defined(CONFIG_KSU_SYSCALL_TABLE_HOOK)
+/* KernelSU-Next supercalls (fd install for ksud and the manager) */
+extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd,
+				 void __user **arg);
+#endif
+
 SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,
 		void __user *, arg)
 {
@@ -332,6 +338,10 @@ SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,
 		     system_state == SYSTEM_RUNNING &&
 		     uid_eq(current_uid(), GLOBAL_ROOT_UID)))
 		susfs_handle_cmd(cmd, &arg);
+#endif
+#if defined(CONFIG_KSU_MANUAL_HOOK) || defined(CONFIG_KSU_SYSCALL_TABLE_HOOK)
+	/* before the CAP_SYS_BOOT check: the manager calls this as an app */
+	ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
 #endif
 
 

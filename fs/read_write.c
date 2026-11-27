@@ -571,10 +571,20 @@ static inline void file_pos_write(struct file *file, loff_t pos)
 		file->f_pos = pos;
 }
 
+#if defined(CONFIG_KSU_MANUAL_HOOK) || defined(CONFIG_KSU_SYSCALL_TABLE_HOOK)
+/* KernelSU-Next: injects ksud into init.rc while init reads it, then stops */
+extern void ksu_handle_sys_read(unsigned int fd);
+#endif
+
 ssize_t ksys_read(unsigned int fd, char __user *buf, size_t count)
 {
-	struct fd f = fdget_pos(fd);
+	struct fd f;
 	ssize_t ret = -EBADF;
+
+#if defined(CONFIG_KSU_MANUAL_HOOK) || defined(CONFIG_KSU_SYSCALL_TABLE_HOOK)
+	ksu_handle_sys_read(fd);
+#endif
+	f = fdget_pos(fd);
 
 	if (f.file) {
 		loff_t pos = file_pos_read(f.file);

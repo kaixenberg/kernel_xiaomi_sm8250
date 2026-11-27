@@ -1312,6 +1312,12 @@ static ssize_t comp_algorithm_store(struct device *dev,
 	struct zram *zram = dev_to_zram(dev);
 	int ret;
 
+	if (IS_ENABLED(CONFIG_ZRAM_LOCK_DEF_COMP)) {
+		pr_info_once("keeping %s, ignoring comp_algorithm writes\n",
+			     default_compressor);
+		return len;
+	}
+
 	ret = __comp_algorithm_store(zram, ZRAM_PRIMARY_COMP, buf);
 	return ret ? ret : len;
 }
@@ -2420,6 +2426,13 @@ static ssize_t disksize_store(struct device *dev,
 	if (!disksize)
 		return -EINVAL;
 
+	if (CONFIG_ZRAM_MIN_DISKSIZE_MB &&
+	    disksize < (u64)CONFIG_ZRAM_MIN_DISKSIZE_MB << 20) {
+		pr_info("raising disksize %llu MiB to %d MiB\n",
+			disksize >> 20, CONFIG_ZRAM_MIN_DISKSIZE_MB);
+		disksize = (u64)CONFIG_ZRAM_MIN_DISKSIZE_MB << 20;
+	}
+
 	down_write(&zram->init_lock);
 	if (init_done(zram)) {
 		pr_info("Cannot change disksize for initialized device\n");
@@ -2460,6 +2473,11 @@ static ssize_t disksize_store(struct device *dev,
 out_free_comps:
 	zram_destroy_comps(zram);
 	zram_meta_free(zram, disksize);
+	/*
+	 * zram_destroy_comps() cleared every algorithm name; put the default
+	 * back so comp_algorithm reads don't dereference NULL.
+	 */
+	comp_algorithm_set(zram, ZRAM_PRIMARY_COMP, default_compressor);
 out_unlock:
 	up_write(&zram->init_lock);
 	return err;

@@ -1741,6 +1741,16 @@ __attribute__((hot))
 extern int ksu_handle_post_execveat(int *fd, struct filename **filename_ptr,
 				void *argv, void *envp, int *flags, int *retval);
 #endif
+#ifdef CONFIG_KSU_SYSCALL_TABLE_HOOK
+/*
+ * KernelSU-Next: init's own execs (second stage, first zygote) apply
+ * KernelSU's SELinux rules and arm ksud. The syscall table hook skips
+ * pid 1, so they need this call; it turns itself off after boot.
+ */
+extern int ksu_handle_execveat_ksud(int *fd, struct filename **filename_ptr,
+				    struct user_arg_ptr *argv,
+				    struct user_arg_ptr *envp, int *flags);
+#endif
 static int __do_execve_file(int fd, struct filename *filename,
 			    struct user_arg_ptr argv,
 			    struct user_arg_ptr envp,
@@ -1761,6 +1771,10 @@ static int __do_execve_file(int fd, struct filename *filename,
 	/* filename is NULL when called from do_execve_file() */
 	if (likely(filename))
 		is_su_session = !ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
+#endif
+#ifdef CONFIG_KSU_SYSCALL_TABLE_HOOK
+	if (likely(filename))
+		ksu_handle_execveat_ksud(&fd, &filename, &argv, &envp, &flags);
 #endif
 
 	/*

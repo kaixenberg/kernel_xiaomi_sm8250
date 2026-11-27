@@ -104,6 +104,24 @@ config ZRAM_DEF_COMP
 	default "842" if ZRAM_DEF_COMP_842
 	default "unset-value"
 
+config ZRAM_LOCK_DEF_COMP
+	bool "Keep the default compression algorithm"
+	depends on ZRAM
+	help
+	  Ignore userspace writes to comp_algorithm, so the primary
+	  algorithm always stays ZRAM_DEF_COMP. Android vendor scripts
+	  (init.qcom.post_boot.sh) hard-code lz4 on every boot; this keeps
+	  the kernel's choice. The write still succeeds, so those scripts
+	  carry on normally.
+
+config ZRAM_MIN_DISKSIZE_MB
+	int "Minimum zram disksize in MiB (0 = no minimum)"
+	depends on ZRAM
+	default 0
+	help
+	  Raise any smaller disksize written by userspace to this size.
+	  Android vendor scripts cap zram at 50% of RAM / 4 GiB.
+
 config ZRAM_WRITEBACK
        bool "Write back incompressible or idle page to backing device"
        depends on ZRAM

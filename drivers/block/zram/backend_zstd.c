@@ -4,6 +4,7 @@
 #include <linux/mm.h>
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
+#include <linux/sched/mm.h>
 #include <linux/zstd.h>
 
 #include "backend_zstd.h"
@@ -28,7 +29,19 @@ struct zstd_params {
  */
 static void *zstd_custom_alloc(void *opaque, size_t size)
 {
-	return kvzalloc(size, GFP_NOIO | __GFP_NOWARN);
+	unsigned int noio_flags;
+	void *mem;
+
+	/*
+	 * On this kernel kvmalloc() only falls back to vmalloc for
+	 * GFP_KERNEL-compatible flags, so GFP_NOIO would need one large
+	 * physically contiguous block and fail once memory is fragmented.
+	 * Get the NOIO semantics from the task scope instead.
+	 */
+	noio_flags = memalloc_noio_save();
+	mem = kvzalloc(size, GFP_KERNEL | __GFP_NOWARN);
+	memalloc_noio_restore(noio_flags);
+	return mem;
 }
 
 static void zstd_custom_free(void *opaque, void *address)
@@ -63,6 +76,10 @@ static int zstd_setup_params(struct zcomp_params *params)
 		params->level = zstd_default_clevel();
 
 	zp->cprm = zstd_get_params(params->level, PAGE_SIZE);
+
+	/* Without a dictionary only ->cprm is used (see zstd_compress()) */
+	if (params->dict_sz == 0)
+		return 0;
 
 	zp->custom_mem.customAlloc = zstd_custom_alloc;
 	zp->custom_mem.customFree = zstd_custom_free;

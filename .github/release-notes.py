@@ -146,6 +146,14 @@ def main():
           f"The `-spoofed` APK uses a random package name, so apps and ROMs "
           f"that look for root managers by package don't find it.")
         w("")
+        w("Coming from a NidhiKernel release before the switch to KernelSU-Next "
+          "(backslashxx KernelSU)? Flash, boot, then install the KernelSU-Next "
+          "manager and open it; it replaces `/data/adb/ksud` with its own. Your "
+          "superuser list, app profiles and modules carry over. Uninstall the "
+          "old manager (`me.weishu.kernelsu`), and re-check Settings, because "
+          "KernelSU-Next keeps its own feature switches (such as restricting "
+          "root to adb shell).")
+        w("")
 
     w("## Flashing")
     w("")

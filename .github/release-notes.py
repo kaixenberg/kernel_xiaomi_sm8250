@@ -12,8 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-KSU_UPSTREAM = "https://github.com/backslashxx/KernelSU"
-KOWSU = "https://github.com/KOWX712/KernelSU"
+KSU_UPSTREAM = "https://github.com/KernelSU-Next/KernelSU-Next"
 VARIANTS = {
     "aosp": ("AOSP-based ROMs", "nidhi", ""),
     "miui": ("MIUI / HyperOS", "nidhi-miui", "-miui"),
@@ -141,13 +140,11 @@ def main():
     if first.get("ksu_code"):
         w("## KernelSU manager")
         w("")
-        w(f"The driver is [backslashxx KernelSU]({KSU_UPSTREAM}) with SuSFS, "
-          f"version code **{first['ksu_code']}**. Use its manager from the "
-          f"[releases]({KSU_UPSTREAM}/releases) or CI, or the "
-          f"[KOWSU manager]({KOWSU}) (`com.kowx712.supermanager`), which the "
-          f"driver also accepts. Some ROMs hide `me.weishu.kernelsu` from "
-          f"other apps, which breaks the official manager's WebUI; KOWSU is "
-          f"not affected.")
+        w(f"The driver is [KernelSU-Next]({KSU_UPSTREAM}) (legacy, non-GKI) "
+          f"with SuSFS, version code **{first['ksu_code']}**. Install the "
+          f"KernelSU-Next manager from its [releases]({KSU_UPSTREAM}/releases). "
+          f"The `-spoofed` APK uses a random package name, so apps and ROMs "
+          f"that look for root managers by package don't find it.")
         w("")
 
     w("## Flashing")

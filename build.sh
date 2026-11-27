@@ -162,9 +162,9 @@ make "${MAKE_ARGS[@]}" -j"$JOBS"
 
 # --- Package ---------------------------------------------------------------
 RELEASE=$(cat "$OUT/include/config/kernel.release")
-# KernelSU's version, as compiled in (backslashxx sets it in its Makefile)
+# KernelSU's version, as compiled in (KernelSU-Next sets it in its Kbuild)
 KSU_CODE=$(grep -ohs -- '-DKSU_VERSION=[0-9]*' "$OUT"/drivers/kernelsu/.*.cmd "$OUT"/drivers/kernelsu/*/.*.cmd | head -1 | cut -d= -f2 || true)
-KSU_NAME="backslashxx KernelSU $(git -C KernelSU describe --tags --always --dirty 2>/dev/null || echo unknown)"
+KSU_NAME="KernelSU-Next legacy $(git -C KernelSU describe --tags --always --dirty 2>/dev/null || echo unknown)"
 CLANG_VERSION=$(clang --version | head -1)
 BOOT=$OUT/arch/arm64/boot
 ZIP_NAME=NidhiKernel-$VARIANT-$DEVICE-$(date -u +%Y%m%d-%H%M)

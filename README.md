@@ -27,7 +27,7 @@ all-on combination is tested.
 ### Root and hiding
 | Feature | Switch |
 |---|---|
-| [backslashxx KernelSU](https://github.com/backslashxx/KernelSU), hooked through arm64 branch-link patching | `CONFIG_KSU` |
+| [KernelSU-Next](https://github.com/KernelSU-Next/KernelSU-Next) (legacy, non-GKI), hooked through syscall table patching | `CONFIG_KSU` |
 | SuSFS v2.4.0 with the priority UID filter, wired into the kernel and KernelSU by NidhiKernel | `CONFIG_KSU_SUSFS` |
 | [NoMount](https://github.com/maxsteeel/nomount) VFS path redirection | `CONFIG_NOMOUNT` |
 | [Baseband-guard](https://github.com/vc-teahouse/Baseband-guard): blocks writes to critical partitions | `CONFIG_BBG` |
@@ -42,6 +42,7 @@ all-on combination is tested.
 | EFFGPU: GPU capped at 587 MHz | `CONFIG_EFFGPU` |
 | CASS keeps work off the prime core and breaks ties fairly | — |
 | kcompressd: zram compression moved off kswapd | `CONFIG_KCOMPRESSD` |
+| 8 GiB zram with zstd, overriding the vendor script's 4 GiB lz4 (zstd fits about 40% more on this phone) | `CONFIG_ZRAM_MIN_DISKSIZE_MB`, `CONFIG_ZRAM_LOCK_DEF_COMP` |
 | NEON LZ4 decoder for zram | `CONFIG_LZ4_ARM64_NEON` |
 | BBRv3 TCP congestion control with the fq qdisc | `CONFIG_TCP_CONG_BBR` |
 | Built with `-march=armv8.2-a -mtune=cortex-a77` | `CONFIG_ARM64_TUNE_SM8250` |
@@ -68,15 +69,13 @@ Inherited from MagicTime: KCAL, HBM, USB fast charge, WireGuard and more.
 
 ## KernelSU manager
 
-Use the manager from [backslashxx/KernelSU](https://github.com/backslashxx/KernelSU/releases),
-or [KOWSU](https://github.com/KOWX712/KernelSU) (`com.kowx712.supermanager`),
-which this KernelSU also accepts. Some ROMs hide the official manager's
-package (`me.weishu.kernelsu`) from other apps, which breaks its WebUI and
-installing modules from a file manager; KOWSU isn't affected.
+Use the KernelSU-Next manager from its
+[releases](https://github.com/KernelSU-Next/KernelSU-Next/releases). Prefer the
+`-spoofed` APK: it installs under a random package name, so apps (and ROMs
+such as EvolutionX, which hide known root managers) don't find it by package.
 
-The driver and manager version codes don't match, and that's expected.
-The driver's code (such as 32725) only changes when backslashxx changes the
-kernel side, while the manager's goes up with every upstream commit.
+The driver and manager version codes don't match, and that's expected: the
+driver is built from the legacy branch, the manager from the main one.
 
 ## Building with GitHub Actions
 
@@ -147,7 +146,7 @@ with fastboot restores the stock kernel.
 - kvsnr113 and contributors for [e404](https://github.com/kvsnr113/xiaomi_sm8250_kernel_e404),
   the source of EFFCPU, the CASS changes, the NEON LZ4 decoder, kcompressd
   and the DC dimming driver.
-- backslashxx for KernelSU, and the SuSFS, NoMount, Baseband-guard,
+- the KernelSU-Next team and backslashxx for KernelSU, and the SuSFS, NoMount, Baseband-guard,
   Re:Kernel and Droidspaces projects, and the authors of the BBRv3 backport.
   KernelSU comes from the [kaixenberg/KernelSU](https://github.com/kaixenberg/KernelSU)
   fork (branch `nidhi`), which adds the SuSFS integration and hides the
